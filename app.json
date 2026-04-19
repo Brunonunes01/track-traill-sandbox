@@ -4,7 +4,7 @@
     "slug": "tracktrail",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/logo.png",
+    "icon": "./assets/images/icon.png",
     "scheme": "tracktrail",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -18,7 +18,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/logo.png",
+        "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#ffffff"
       },
       "permissions": [
@@ -81,8 +81,9 @@
       },
       "router": {},
       "eas": {
-        "projectId": "b15aa9ff-e995-4b01-8c4d-b9be8953e564"
+        "projectId": "d87eecde-1ab9-4f44-90fc-14606cdd6c06"
       }
-    }
+    },
+    "owner": "brunonunes01"
   }
 }

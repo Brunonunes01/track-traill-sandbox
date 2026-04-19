@@ -70,15 +70,14 @@ const missingFirebaseFields = requiredFirebaseFields
   .filter((key) => !String(firebaseConfig[key] || "").trim())
   .map((key) => key);
 
-if (missingFirebaseFields.length > 0) {
-  throw new Error(
+export const isFirebaseConfigured = missingFirebaseFields.length === 0;
+if (!isFirebaseConfigured) {
+  console.warn(
     `[firebase] configuração ausente: ${missingFirebaseFields.join(
       ", "
-    )}. Defina EXPO_PUBLIC_FIREBASE_* ou expo.extra.firebase.`
+    )}. O app seguirá em modo degradado até EXPO_PUBLIC_FIREBASE_* ser definido no build.`
   );
 }
-
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
 const buildFallbackDatabaseUrl = () => {
   const normalizedProjectId = String(firebaseConfig.projectId || "")
@@ -88,6 +87,29 @@ const buildFallbackDatabaseUrl = () => {
   const safeProjectId = normalizedProjectId || "local-dev";
   return `https://${safeProjectId}-default-rtdb.firebaseio.com`;
 };
+
+const buildFallbackFirebaseConfig = () => ({
+  apiKey: firebaseConfig.apiKey || "missing-api-key",
+  authDomain: firebaseConfig.authDomain || "missing-auth-domain.local",
+  databaseURL: firebaseConfig.databaseURL || buildFallbackDatabaseUrl(),
+  projectId: firebaseConfig.projectId || "missing-project-id",
+  storageBucket: firebaseConfig.storageBucket || "missing-project-id.appspot.com",
+  messagingSenderId: firebaseConfig.messagingSenderId || "000000000000",
+  appId: firebaseConfig.appId || "1:000000000000:web:missing-app-id",
+});
+
+const app = (() => {
+  if (getApps().length > 0) return getApp();
+  try {
+    return initializeApp(firebaseConfig);
+  } catch (error) {
+    console.warn(
+      "[firebase] initializeApp falhou com config principal. Aplicando fallback para evitar crash no startup.",
+      error
+    );
+    return initializeApp(buildFallbackFirebaseConfig());
+  }
+})();
 
 const getReactNativePersistenceSafe = () => {
   try {
