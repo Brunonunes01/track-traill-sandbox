@@ -1,0 +1,113 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
+      ".indexOn": ["role"],
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
+        "role": {
+          ".write": false
+        },
+        "roleSource": {
+          ".write": false
+        },
+        "roleUpdatedAt": {
+          ".write": false
+        },
+        "privacyZone": {
+          ".write": "auth != null && auth.uid === $uid"
+        },
+        "atividades": {
+          "$activityId": {
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        },
+        "rotas_tracadas": {
+          "$routeId": {
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        }
+      }
+    },
+    "usernames": {
+      "$username": {
+        ".read": "auth != null",
+        ".write": "auth != null && ((!data.exists() && newData.val() === auth.uid) || (data.val() === auth.uid && (newData.val() === auth.uid || newData.val() === null)))"
+      }
+    },
+    "alerts": {
+      ".read": "auth != null",
+      "$alertId": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "userId": {
+          ".validate": "newData.val() === data.val() || newData.val() === auth.uid"
+        },
+        "status": {
+          ".validate": "newData.val() === 'ativo' || newData.val() === 'resolvido' || newData.val() === 'expirado' || newData.val() === 'removido'"
+        }
+      }
+    },
+    "communityPosts": {
+      ".read": "auth != null",
+      "$postId": {
+        ".write": "auth != null && (!data.exists() ? newData.child('authorId').val() === auth.uid : data.child('authorId').val() === auth.uid)",
+        "commentsCount": {
+          ".write": "auth != null"
+        },
+        "kudosCount": {
+          ".write": "auth != null"
+        },
+        "comments": {
+          "$commentId": {
+            ".write": "auth != null && (!data.exists() ? newData.child('authorId').val() === auth.uid : data.child('authorId').val() === auth.uid || root.child('communityPosts').child($postId).child('authorId').val() === auth.uid)"
+          }
+        },
+        "kudos": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        }
+      }
+    },
+    "friendships": {
+      ".read": "auth != null",
+      "$id": {
+        ".read": "auth != null && (data.child('senderId').val() === auth.uid || data.child('receiverId').val() === auth.uid)",
+        ".write": "auth != null && ((!data.exists() && newData.child('senderId').val() === auth.uid && newData.child('receiverId').isString() && newData.child('status').val() === 'pending') || (data.exists() && (data.child('senderId').val() === auth.uid || data.child('receiverId').val() === auth.uid) && newData.child('senderId').val() === data.child('senderId').val() && newData.child('receiverId').val() === data.child('receiverId').val()))"
+      }
+    },
+    "rotas_pendentes": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
+      "$routeId": {
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
+        ".write": "auth != null && ((auth.token.admin === true || auth.token.role === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1') || (!data.exists() && newData.child('sugeridoPor').val() === auth.uid) || (data.exists() && data.child('sugeridoPor').val() === auth.uid && (newData.child('sugeridoPor').val() === auth.uid || !newData.exists())))"
+      }
+    },
+    "rotas_oficiais": {
+      ".read": "auth != null",
+      ".write": "auth != null && (auth.token.admin === true || auth.token.role === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')"
+    },
+    "segments": {
+      ".read": "auth != null",
+      "$segmentId": {
+        ".write": "auth != null && ((auth.token.admin === true || auth.token.role === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'admin') || (!data.exists() && newData.child('createdBy').val() === auth.uid) || (data.exists() && data.child('createdBy').val() === auth.uid && (newData.child('createdBy').val() === auth.uid || !newData.exists())))"
+      }
+    },
+    "segmentAttempts": {
+      ".read": "auth != null",
+      "$attemptId": {
+        ".write": "auth != null && ((!data.exists() && newData.child('userId').val() === auth.uid) || (data.exists() && data.child('userId').val() === auth.uid && (newData.child('userId').val() === auth.uid || !newData.exists())))"
+      }
+    },
+    "pois": {
+      ".read": "auth != null",
+      "$poiId": {
+        ".write": "auth != null && ((!data.exists() && newData.child('criadoPor').val() === auth.uid) || (data.exists() && data.child('criadoPor').val() === auth.uid && (newData.child('criadoPor').val() === auth.uid || !newData.exists())))"
+      }
+    }
+  }
+}
