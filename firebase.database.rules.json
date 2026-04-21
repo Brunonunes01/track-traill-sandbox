@@ -3,11 +3,11 @@
     ".read": false,
     ".write": false,
     "users": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
       ".indexOn": ["role"],
       "$uid": {
         ".read": "auth != null",
-        ".write": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
+        ".write": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
         "role": {
           ".write": false
         },
@@ -81,15 +81,15 @@
       }
     },
     "rotas_pendentes": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
       "$routeId": {
-        ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
-        ".write": "auth != null && ((auth.token.admin === true || auth.token.role === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1') || (!data.exists() && newData.child('sugeridoPor').val() === auth.uid) || (data.exists() && data.child('sugeridoPor').val() === auth.uid && (newData.child('sugeridoPor').val() === auth.uid || !newData.exists())))"
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
+        ".write": "auth != null && ((auth.token.admin === true || auth.token.role === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1') || (!data.exists() && newData.child('sugeridoPor').val() === auth.uid) || (data.exists() && data.child('sugeridoPor').val() === auth.uid && (newData.child('sugeridoPor').val() === auth.uid || !newData.exists())))"
       }
     },
     "rotas_oficiais": {
       ".read": "auth != null",
-      ".write": "auth != null && (auth.token.admin === true || auth.token.role === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')"
+      ".write": "auth != null && (auth.token.admin === true || auth.token.role === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')"
     },
     "segments": {
       ".read": "auth != null",

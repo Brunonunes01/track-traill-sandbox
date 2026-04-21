@@ -36,7 +36,7 @@ import {
 type AdminSection = "add" | "admins" | "users" | "tools" | "routes" | "settings" | "alerts";
 type AlertFilter = "todos" | "ativos" | "expirados" | "denunciados" | "resolvidos";
 
-const PRIVILEGED_ADMIN_EMAIL = "brunonunes01@gmail.com";
+const PRIVILEGED_ADMIN_EMAIL = "brunobhnuness@gmail.com";
 
 type Coordinate = {
   latitude: number;
@@ -239,28 +239,32 @@ export default function AdminDashboardScreen() {
       oficiaisRef,
       (snapshot) => {
         if (!snapshot.exists()) {
+          console.log("[Admin] O nó 'rotas_oficiais' está vazio no banco de dados.");
           setOfficialRoutes([]);
           return;
         }
 
         const data = snapshot.val() || {};
-        const lista: AdminRouteItem[] = Object.keys(data).map((key) => {
+        const keys = Object.keys(data);
+        console.log(`[Admin] Recebidas ${keys.length} rotas oficiais do Firebase.`);
+        
+        const lista: AdminRouteItem[] = keys.map((key) => {
           const route = data[key] || {};
           return {
             id: key,
             titulo: String(route.titulo || route.nome || "Rota sem nome"),
             tipo: String(route.tipo || "trilha"),
-            distancia: route.distancia ? String(route.distancia) : undefined,
-            criadoEm: route.aprovadoEm || route.createdAt || route.dataCriacao,
-            autor: route.autor || route.emailAutor || route.userEmail || route.userDisplayName,
+            distancia: route.distancia ? String(route.distancia) : "N/D",
+            criadoEm: route.aprovadoEm || route.criadoEm || route.createdAt || route.dataCriacao,
+            autor: route.autor || route.emailAutor || route.userEmail || "Sistema",
           };
         });
 
-        lista.sort((a, b) => (a.titulo || "").localeCompare(b.titulo || ""));
+        lista.sort((a, b) => (b.criadoEm || "").localeCompare(a.criadoEm || ""));
         setOfficialRoutes(lista);
       },
       (error) => {
-        console.warn("[admin] rotas_oficiais listener failed:", error?.message || String(error));
+        console.warn("[Admin] Erro ao ler 'rotas_oficiais':", error.message);
         setOfficialRoutes([]);
       }
     );

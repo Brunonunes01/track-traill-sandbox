@@ -208,9 +208,14 @@ export default function DashboardScreen() {
 
   const formatarDuracao = (totalSegundos: number) => {
     if (!totalSegundos) return "00:00";
-    const min = Math.floor(totalSegundos / 60);
-    const seg = Math.floor(totalSegundos % 60);
-    return `${min < 10 ? "0" : ""}${min}:${seg < 10 ? "0" : ""}${seg}`;
+    const h = Math.floor(totalSegundos / 3600);
+    const m = Math.floor((totalSegundos % 3600) / 60);
+    const s = totalSegundos % 60;
+
+    if (h > 0) {
+      return `${h}:${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
+    }
+    return `${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
   };
 
   const openEditModal = (item: DashboardActivity) => {

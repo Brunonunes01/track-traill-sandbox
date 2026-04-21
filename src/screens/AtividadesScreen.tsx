@@ -4,7 +4,7 @@ import { useNavigation, useRoute } from "@react-navigation/native";
 import * as Location from "expo-location";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Linking, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import MapView, { Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import Animated, { FadeInDown, FadeOutDown, Layout, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
@@ -63,14 +63,33 @@ const ActivityMapView = memo(function ActivityMapView({
     <MapView
       ref={mapRef}
       style={styles.map}
-      provider={PROVIDER_DEFAULT}
+      provider={Platform.OS === 'android' ? PROVIDER_DEFAULT : undefined}
       initialRegion={mapInitialRegion}
       showsUserLocation
       showsMyLocationButton={false}
+      showsCompass={true}
+      rotateEnabled={true}
     >
       {safeSuggestedPath.length > 1 ? (
-        <Polyline coordinates={safeSuggestedPath} strokeColor="rgba(249,115,22,0.45)" strokeWidth={6} />
+        <Polyline coordinates={safeSuggestedPath} strokeColor="#2563eb" strokeWidth={6} />
       ) : null}
+      
+      {safeSuggestedPath.length > 0 && (
+        <Marker coordinate={safeSuggestedPath[0]} title="Início da Rota">
+           <View style={styles.markerStart}>
+              <Ionicons name="play" size={12} color="#fff" />
+           </View>
+        </Marker>
+      )}
+      
+      {safeSuggestedPath.length > 1 && (
+        <Marker coordinate={safeSuggestedPath[safeSuggestedPath.length - 1]} title="Destino Final">
+           <View style={styles.markerEnd}>
+              <Ionicons name="flag" size={14} color="#fff" />
+           </View>
+        </Marker>
+      )}
+
       {trackedPath.length > 1 ? (
         <Polyline coordinates={trackedPath} strokeColor="#fb7185" strokeWidth={5} />
       ) : null}
@@ -99,6 +118,24 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
   const [focusMode, setFocusMode] = useState(false);
   const [distanceFromRouteStartMeters, setDistanceFromRouteStartMeters] = useState<number | null>(null);
 
+  const safeSuggestedPath = useMemo(() => toCoordinateArray(rotaGuia?.rotaCompleta), [rotaGuia?.rotaCompleta]);
+
+  const distanceToDestination = useMemo(() => {
+    if (!session || safeSuggestedPath.length < 2) return null;
+    const lastPoint = session.points[session.points.length - 1];
+    const destination = safeSuggestedPath[safeSuggestedPath.length - 1];
+    if (!lastPoint || !destination) return null;
+
+    return calculateDistance3DMeters(
+      lastPoint.latitude,
+      lastPoint.longitude,
+      null,
+      destination.latitude,
+      destination.longitude,
+      null
+    );
+  }, [session, safeSuggestedPath]);
+
   const trackedPath: Coordinate[] = useMemo(() => toCoordinateArray(session?.points || []), [session]);
   const durationSeconds = useMemo(() => getSessionDurationSeconds(session), [session]);
   const averageSpeed = useMemo(() => getAverageSpeedKmh(session), [session]);
@@ -113,7 +150,6 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
   const isRecording = session?.status === "recording";
   const isPaused = session?.status === "paused_auto" || session?.status === "paused_manual";
   const hasActiveSession = !!session && session.status !== "finished";
-  const safeSuggestedPath = useMemo(() => toCoordinateArray(rotaGuia?.rotaCompleta), [rotaGuia?.rotaCompleta]);
   const routeStartPoint = useMemo(
     () => toCoordinate(rotaGuia?.startPoint) || toCoordinate(rotaGuia?.rotaCompleta?.[0]),
     [rotaGuia?.rotaCompleta, rotaGuia?.startPoint]
@@ -298,11 +334,18 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
           setSession(active);
           setActivityType(active.activityType);
           setStatusMessage(
-            active.status === "recording" ? "Atividade em andamento recuperada." : active.status === "paused_auto" ? "Atividade em pausa automática." : "Atividade pausada manualmente."
+            active.status === "recording"
+              ? "Atividade em andamento recuperada."
+              : active.status === "paused_auto"
+              ? "Atividade em pausa automática."
+              : "Atividade pausada manualmente."
           );
           if (active.trackingMode === "foreground" && active.status === "recording") {
             await startForegroundWatch();
           }
+        } else {
+          setSession(null);
+          setStatusMessage("Pronto para iniciar.");
         }
       } catch (error: any) {
         setStatusMessage("Falha ao obter GPS inicial.");
@@ -318,7 +361,11 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
       getActiveSession()
         .then((active) => {
           if (!mounted) return;
-          if (active && active.status !== "finished") setSession(active);
+          if (active && active.status !== "finished") {
+            setSession(active);
+          } else {
+            setSession((current) => (current !== null ? null : current));
+          }
         })
         .catch((error: any) => {
           if (!mounted) return;
@@ -465,6 +512,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
               try {
                 await discardActiveSession();
                 setSession(null);
+                setStatusMessage("Atividade descartada.");
               } catch (error: any) {
                 Alert.alert("Erro", error?.message || "Não foi possível descartar a atividade.");
               }
@@ -474,6 +522,8 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
         return;
       }
       navigation.navigate("ActivitySummary", { session: finished });
+      setSession(null);
+      setStatusMessage("Pronto para iniciar uma nova atividade.");
     } catch (error: any) {
       Alert.alert("Erro", error?.message || "Não foi possível finalizar.");
     }
@@ -549,6 +599,18 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
         <Pressable style={[styles.locateButton, { bottom: 14 + Math.max(insets.bottom, 0) }]} onPress={handleCenterOnCurrentLocation}>
           <Ionicons name="locate" size={22} color="#f8fafc" />
         </Pressable>
+
+        {isRecording && safeSuggestedPath.length > 0 && (
+          <Animated.View entering={FadeInDown} style={[styles.navHud, { top: insets.top + 90 }]}>
+             <Ionicons name="navigate-circle" size={24} color="#38bdf8" />
+             <View>
+                <Text style={styles.navHudLabel}>Distância p/ o fim</Text>
+                <Text style={styles.navHudValue}>
+                  {distanceToDestination ? (distanceToDestination / 1000).toFixed(2) : "0.00"} km
+                </Text>
+             </View>
+          </Animated.View>
+        )}
       </Animated.View>
 
       <Animated.View style={[styles.metricsSection, metricsAnimatedStyle]}>
@@ -790,4 +852,49 @@ const styles = StyleSheet.create({
   },
   splitActionText: { color: "#fff", fontSize: 15, fontWeight: "800" },
   buttonPressed: { opacity: 0.82 },
+  markerStart: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#22c55e',
+    borderWidth: 2,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  markerEnd: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#ef4444',
+    borderWidth: 2,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navHud: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    borderRadius: 16,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    elevation: 4,
+  },
+  navHudLabel: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  navHudValue: {
+    color: '#f8fafc',
+    fontSize: 18,
+    fontWeight: '800',
+  },
 });

@@ -425,17 +425,19 @@ const processIncomingPoint = (
     return { appended: true, segmentSpeedKmh: 0 };
   }
 
-  const segmentMeters = calculateDistance3DMeters(
+  // Usamos a distância 2D (horizontal) para o acumulador principal para evitar que o ruído do sensor de altitude infle a distância total.
+  // Isso é o padrão na indústria (ex: Strava).
+  const segmentMeters2D = calculateDistance3DMeters(
     previous.latitude,
     previous.longitude,
-    previous.altitude,
+    null, // Ignora altitude para cálculo 2D
     point.latitude,
     point.longitude,
-    point.altitude
+    null
   );
 
   const elapsedSec = Math.max(0, (point.timestamp - previous.timestamp) / 1000);
-  const segmentSpeedKmh = elapsedSec > 0 ? metersToKm(segmentMeters) / (elapsedSec / 3600) : 0;
+  const segmentSpeedKmh = elapsedSec > 0 ? metersToKm(segmentMeters2D) / (elapsedSec / 3600) : 0;
 
   if (session.status === "paused_manual") {
     return { appended: false, segmentSpeedKmh };
@@ -465,16 +467,16 @@ const processIncomingPoint = (
     }
   }
 
-  if (segmentMeters < MIN_POINT_DISTANCE_METERS) {
+  if (segmentMeters2D < MIN_POINT_DISTANCE_METERS) {
     return { appended: false, segmentSpeedKmh };
   }
 
-  if (isInvalidGpsJump(previous, point, segmentMeters, session.activityType)) {
+  if (isInvalidGpsJump(previous, point, segmentMeters2D, session.activityType)) {
     return { appended: false, segmentSpeedKmh };
   }
 
-  session.distanceKm += metersToKm(segmentMeters);
-  updateElevationStats(session, point);
+  session.distanceKm += metersToKm(segmentMeters2D);
+  updateElevationStats(session, point); // Estatísticas de elevação continuam usando altitude real
   session.points.push(point);
   return { appended: true, segmentSpeedKmh };
 };

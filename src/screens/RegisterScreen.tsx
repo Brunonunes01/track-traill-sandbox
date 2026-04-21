@@ -1,9 +1,11 @@
 import { Ionicons } from "@expo/vector-icons";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { createUserWithEmailAndPassword, type User } from "firebase/auth";
 import React, { useState } from "react";
 import {
   Image,
   ImageBackground,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -13,6 +15,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import MaskInput, { Masks } from "react-native-mask-input";
 import { auth } from "../../services/connectionFirebase";
 import { isUsernameValid, normalizeUsername, registerUserProfile } from "../services/userService";
 
@@ -22,11 +25,32 @@ export default function RegisterScreen({ navigation }: any) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [birthDate, setBirthDate] = useState("");
+  const [birthDateObject, setBirthDateObject] = useState<Date | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const onDateChange = (event: any, selectedDate?: Date) => {
+    // No Android, o picker fecha sozinho. No iOS, ele pode ficar aberto (estilo spinner).
+    if (Platform.OS === "android") {
+      setShowDatePicker(false);
+    }
+
+    if (selectedDate) {
+      setBirthDateObject(selectedDate);
+      const day = selectedDate.getDate().toString().padStart(2, "0");
+      const month = (selectedDate.getMonth() + 1).toString().padStart(2, "0");
+      const year = selectedDate.getFullYear();
+      setBirthDate(`${day}/${month}/${year}`);
+      if (error) setError("");
+    } else if (Platform.OS === "ios") {
+      // Se cancelado no iOS, apenas fecha
+      setShowDatePicker(false);
+    }
+  };
 
   const handleRegister = async () => {
     if (!fullName || !username || !email || !password || !birthDate || !phone || !address) {
@@ -82,7 +106,8 @@ export default function RegisterScreen({ navigation }: any) {
       setAddress("");
       setError("");
 
-      navigation.navigate("Login");
+      // NUNCA navegue manualmente para Login após criar conta. 
+      // O Firebase Auth altera o estado global e o app fluirá para a Home via _layout.tsx.
     } catch (err: any) {
       if (err.code === "auth/email-already-in-use") setError("Este e-mail já está em uso.");
       else if (err.code === "auth/invalid-email") setError("E-mail inválido.");
@@ -97,7 +122,11 @@ export default function RegisterScreen({ navigation }: any) {
   return (
     <ImageBackground source={require("../../assets/images/Azulao.png")} style={styles.background}>
       <View style={styles.overlay}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.keyboardWrap}>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === "ios" ? "padding" : "height"} 
+          style={styles.keyboardWrap}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
+        >
           <ScrollView
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
@@ -162,36 +191,48 @@ export default function RegisterScreen({ navigation }: any) {
                 />
               </View>
 
-              <View style={styles.inputContainer}>
+              {/* CAMPO DE DATA COM CALENDÁRIO VISUAL */}
+              <TouchableOpacity
+                style={styles.inputContainer}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setShowDatePicker(true);
+                }}
+                activeOpacity={0.7}
+              >
                 <Ionicons name="calendar-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
-                <TextInput
-                  style={[styles.input, webInputExtraStyle]}
-                  placeholder="Data de nascimento (DD/MM/AAAA)"
-                  placeholderTextColor="#cbd5e1"
-                  value={birthDate}
-                  onChangeText={(text) => {
-                    setBirthDate(text);
-                    if (error) setError("");
-                  }}
-                  underlineColorAndroid="transparent"
-                  autoCorrect={false}
+                <View style={styles.input}>
+                  <Text style={birthDate ? styles.inputText : styles.inputPlaceholder}>
+                    {birthDate || "Data de nascimento"}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-down-outline" size={16} color="#94a3b8" />
+              </TouchableOpacity>
+
+              {showDatePicker && (
+                <DateTimePicker
+                  value={birthDateObject || new Date(2000, 0, 1)}
+                  mode="date"
+                  display={Platform.OS === "ios" ? "spinner" : "default"}
+                  onChange={onDateChange}
+                  maximumDate={new Date()}
                 />
-              </View>
+              )}
 
               <View style={styles.inputContainer}>
                 <Ionicons name="call-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
-                <TextInput
+                <MaskInput
                   style={[styles.input, webInputExtraStyle]}
-                  placeholder="Telefone"
+                  placeholder="Telefone (DDD + Número)"
                   placeholderTextColor="#cbd5e1"
                   value={phone}
-                  onChangeText={(text) => {
-                    setPhone(text);
+                  onChangeText={(masked) => {
+                    setPhone(masked);
                     if (error) setError("");
                   }}
+                  mask={Masks.BRL_PHONE}
                   underlineColorAndroid="transparent"
                   keyboardType="phone-pad"
-                  autoCorrect={false}
                 />
               </View>
 
@@ -318,9 +359,18 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
+    justifyContent: "center",
     color: "#FFFFFF",
     fontSize: 15,
     paddingVertical: 0,
+  },
+  inputText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+  },
+  inputPlaceholder: {
+    color: "#cbd5e1",
+    fontSize: 15,
   },
   eyeButton: {
     paddingHorizontal: 4,

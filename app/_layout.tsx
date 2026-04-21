@@ -141,8 +141,6 @@ export default function RootLayout() {
     if (Platform.OS === "android") {
       const configureAndroidNavBar = async () => {
         try {
-          // Keep app content above system navigation bar (prevents bottom tab overlap).
-          await NavigationBar.setPositionAsync("relative");
           await NavigationBar.setVisibilityAsync("visible");
         } catch (error) {
           console.warn("[android-nav] failed to configure navigation bar:", error);

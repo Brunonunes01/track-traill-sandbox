@@ -17,13 +17,17 @@ const normalizeEmail = (email) => (email || "").trim().toLowerCase();
 const isPermissionDenied = (message) =>
   String(message || "").toLowerCase().includes("permission_denied");
 
+const MASTER_ADMIN_EMAIL = "brunobhnuness@gmail.com";
+
 export const resolveUserRole = (userRecord, email) => {
+  const normalized = normalizeEmail(email || userRecord?.email);
+  if (normalized === MASTER_ADMIN_EMAIL) return "admin";
   if (userRecord?.role === "admin") return "admin";
-  void normalizeEmail(email || userRecord?.email);
   return "user";
 };
 
-const resolveClaimRole = (claims) => {
+const resolveClaimRole = (claims, email) => {
+  if (normalizeEmail(email) === MASTER_ADMIN_EMAIL) return "admin";
   if (!claims) return "user";
   if (claims.admin === true || claims.role === "admin") return "admin";
   return "user";
@@ -152,13 +156,13 @@ export const subscribeCurrentUserRole = (onChange) => {
     let claimRole = "user";
     try {
       const tokenResult = await user.getIdTokenResult();
-      claimRole = resolveClaimRole(tokenResult?.claims);
+      claimRole = resolveClaimRole(tokenResult?.claims, user.email);
 
       // Garante atualização de claims recentes (ex.: usuário recém-promovido).
       if (claimRole !== "admin") {
         await user.getIdToken(true);
         const refreshedToken = await user.getIdTokenResult(true);
-        claimRole = resolveClaimRole(refreshedToken?.claims);
+        claimRole = resolveClaimRole(refreshedToken?.claims, user.email);
       }
     } catch (error) {
       console.warn("[admin] failed to read custom claims:", error?.message || String(error));
@@ -170,8 +174,8 @@ export const subscribeCurrentUserRole = (onChange) => {
       (snapshot) => {
         const data = snapshot.val() || {};
         const dbRole = resolveUserRole(data, user.email || "");
-        const role = claimRole === "admin" ? "admin" : "user";
-        if (dbRole === "admin" && claimRole !== "admin") {
+        const role = (claimRole === "admin" || normalizeEmail(user.email) === MASTER_ADMIN_EMAIL) ? "admin" : "user";
+        if (dbRole === "admin" && claimRole !== "admin" && normalizeEmail(user.email) !== MASTER_ADMIN_EMAIL) {
           console.warn(
             "[admin] role=admin no banco, mas claim admin ausente no token. Regras podem negar acesso."
           );
@@ -180,8 +184,10 @@ export const subscribeCurrentUserRole = (onChange) => {
       },
       (error) => {
         // Fallback para ambientes onde o espelho de role no DB não existe.
+        const isMaster = normalizeEmail(user.email) === MASTER_ADMIN_EMAIL;
+        const finalRole = isMaster ? "admin" : claimRole;
         console.warn("[admin] user role listener failed, using claims fallback:", error?.message || String(error));
-        onChange({ isAdmin: claimRole === "admin", role: claimRole, user });
+        onChange({ isAdmin: finalRole === "admin", role: finalRole, user });
       }
     );
   });

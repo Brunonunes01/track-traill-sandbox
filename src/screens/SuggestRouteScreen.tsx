@@ -19,7 +19,14 @@ import {
 } from 'react-native';
 import MapView, { MapPressEvent, Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import { auth, database } from '../../services/connectionFirebase';
-import { fetchGoogleDirections, fetchGraphHopperDirections, travelModeFromActivity } from "../services/directionsService";
+import {
+  fetchGoogleDirections,
+  fetchGraphHopperDirections,
+  fetchRoundTripByDistance,
+  GraphHopperProfile,
+  RoundTripResult,
+  travelModeFromActivity
+} from "../services/directionsService";
 import { FALLBACK_REGION, toCoordinate, toCoordinateArray } from '../utils/geo';
 
 type Coordinate = { latitude: number; longitude: number; };
@@ -33,6 +40,8 @@ export default function SuggestRouteScreen() {
   const [startPoint, setStartPoint] = useState<Coordinate | null>(null);
   const [endPoint, setEndPoint] = useState<Coordinate | null>(null);
   const [routeCoordinates, setRouteCoordinates] = useState<Coordinate[]>([]);
+  const [routeAlternatives, setRouteAlternatives] = useState<RoundTripResult[]>([]);
+  const [selectedAlternativeIndex, setSelectedAlternativeIndex] = useState(0);
   const [isCalculating, setIsCalculating] = useState(false);
   const [rotasOficiais, setRotasOficiais] = useState<any[]>([]);
   
@@ -44,14 +53,21 @@ export default function SuggestRouteScreen() {
   const [terreno, setTerreno] = useState('Misto');
   const [distanciaCalculada, setDistanciaCalculada] = useState<string | null>(null);
   const [tempoCalculado, setTempoCalculado] = useState<string | null>(null);
+  const [unpavedRatio, setUnpavedRatio] = useState<number | null>(null);
   const [tempoEstimadoManual, setTempoEstimadoManual] = useState('');
   const [duracaoSegundos, setDuracaoSegundos] = useState<number | null>(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [visibility, setVisibility] = useState<"public" | "friends" | "private">("public");
+  const [distanceGoalKm, setDistanceGoalKm] = useState("70");
+  const [isGoalMode, setIsGoalMode] = useState(false);
 
   const categorias = ['Ciclismo', 'Corrida', 'Caminhada'];
   const dificuldades = ['Fácil', 'Média', 'Difícil', 'Extrema'];
   const terrenos = ['Asfalto', 'Terra', 'Trilha técnica', 'Misto'];
+  const selectedGoalRoute = routeAlternatives[selectedAlternativeIndex] || null;
+  const activeGoalCoordinates = selectedGoalRoute
+    ? toCoordinateArray(selectedGoalRoute.coordinates)
+    : routeCoordinates;
 
   useEffect(() => {
     let mounted = true;
@@ -148,12 +164,16 @@ export default function SuggestRouteScreen() {
       setDistanciaCalculada(result.distanceText);
       setTempoCalculado(result.durationText);
       setDuracaoSegundos(result.durationSeconds);
+      setUnpavedRatio(result.unpavedRatio ?? null);
+      setRouteAlternatives([]);
+      setSelectedAlternativeIndex(0);
     } catch (error: any) {
       console.error("[RouteCalc] Erro detalhado:", error.message || error);
       setRouteCoordinates([]);
       setDistanciaCalculada(null);
       setTempoCalculado(null);
       setDuracaoSegundos(null);
+      setUnpavedRatio(null);
       
       const isApiKeyError = error.message?.includes("API key");
       Alert.alert(
@@ -168,9 +188,58 @@ export default function SuggestRouteScreen() {
   };
 
   useEffect(() => {
-    if (!startPoint || !endPoint) return;
+    if (isGoalMode || !startPoint || !endPoint) return;
     calcularRotaAcompanhandoEstrada(startPoint, endPoint);
-  }, [tipoRota, provedorRota]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tipoRota, provedorRota, isGoalMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const getProfileFromProvider = (): GraphHopperProfile => {
+    if (provedorRota === "hike") return "foot";
+    if (provedorRota === "google") return "car";
+    return "mtb";
+  };
+
+  const handleGenerateGoalRoute = async (origin: Coordinate) => {
+    const goal = Number(String(distanceGoalKm).replace(",", "."));
+    if (!Number.isFinite(goal) || goal < 5) {
+      Alert.alert("Meta inválida", "Informe uma meta em km (mínimo 5 km).");
+      return;
+    }
+
+    setIsCalculating(true);
+    try {
+      const result = await fetchRoundTripByDistance({
+        origin,
+        targetDistanceKm: goal,
+        profile: getProfileFromProvider(),
+        alternatives: 3,
+      });
+
+      setRouteCoordinates(toCoordinateArray(result.best.coordinates));
+      setRouteAlternatives(result.alternatives);
+      setSelectedAlternativeIndex(0);
+      setStartPoint(origin);
+      setEndPoint(origin);
+      setDistanciaCalculada(result.best.distanceText);
+      setTempoCalculado(result.best.durationText);
+      setDuracaoSegundos(result.best.durationSeconds);
+      setUnpavedRatio(result.best.unpavedRatio ?? null);
+      setTerreno("Terra");
+    } catch (error: any) {
+      console.error("[RoundTrip] Erro ao gerar rota por meta:", error?.message || String(error));
+      const message = String(error?.message || "");
+      const isRateLimit =
+        message.toLowerCase().includes("limite de requisições") ||
+        message.toLowerCase().includes("minutely api limit");
+      Alert.alert(
+        isRateLimit ? "Limite temporário da API" : "Falha ao gerar rota",
+        isRateLimit
+          ? "Muitas buscas em sequência. Aguarde cerca de 1 minuto e toque em Gerar novamente."
+          : message || "Tente novamente com outra meta."
+      );
+    } finally {
+      setIsCalculating(false);
+    }
+  };
 
   const handleMapPress = (e: MapPressEvent) => {
     const coords = toCoordinate(e.nativeEvent.coordinate);
@@ -178,6 +247,20 @@ export default function SuggestRouteScreen() {
       console.warn("[map] SuggestRoute ignored invalid coordinate from map press");
       return;
     }
+    if (isGoalMode) {
+      setStartPoint(coords);
+      setEndPoint(coords);
+      setRouteCoordinates([]);
+      setRouteAlternatives([]);
+      setSelectedAlternativeIndex(0);
+      setDistanciaCalculada(null);
+      setTempoCalculado(null);
+      setDuracaoSegundos(null);
+      setUnpavedRatio(null);
+      handleGenerateGoalRoute(coords);
+      return;
+    }
+
     if (!startPoint) {
       setStartPoint(coords);
     } else if (!endPoint) {
@@ -213,11 +296,27 @@ export default function SuggestRouteScreen() {
     setDistanciaCalculada(null);
     setTempoCalculado(null);
     setDuracaoSegundos(null);
+    setUnpavedRatio(null);
+    setRouteAlternatives([]);
+    setSelectedAlternativeIndex(0);
     setIsFormVisible(false);
   };
 
+  const selectAlternative = (index: number) => {
+    const selected = routeAlternatives[index];
+    if (!selected) return;
+    setSelectedAlternativeIndex(index);
+    setRouteCoordinates(toCoordinateArray(selected.coordinates));
+    setDistanciaCalculada(selected.distanceText);
+    setTempoCalculado(selected.durationText);
+    setDuracaoSegundos(selected.durationSeconds);
+    setUnpavedRatio(selected.unpavedRatio ?? null);
+    setEndPoint(startPoint);
+  };
+
   const handleEnviarSugestao = async () => {
-    if (!startPoint || !endPoint) { Alert.alert('Atenção', 'Marque Início e Fim no mapa.'); return; }
+    if (!startPoint || (!endPoint && !isGoalMode)) { Alert.alert('Atenção', 'Marque Início e Fim no mapa.'); return; }
+    if (routeCoordinates.length < 2) { Alert.alert('Atenção', 'Gere a rota antes de salvar.'); return; }
     if (!nomeRota) { Alert.alert('Atenção', 'Preencha o nome da rota.'); return; }
     const user = auth.currentUser;
     if (!user) { Alert.alert('Erro', 'Você precisa estar logado.'); return; }
@@ -234,7 +333,7 @@ export default function SuggestRouteScreen() {
         terreno,
         descricao: descricao || 'Sem descrição.',
         startPoint,
-        endPoint,
+        endPoint: endPoint || startPoint,
         rotaCompleta: routeCoordinates,
         sugeridoPor: user.uid,
         emailAutor: user.email,
@@ -285,8 +384,12 @@ export default function SuggestRouteScreen() {
             {rotasOficiais.map(rota => rota.rotaCompleta && (
                 <Polyline key={`oficial-${rota.id}`} coordinates={rota.rotaCompleta} strokeColor="rgba(37, 99, 235, 0.5)" strokeWidth={5} />
             ))}
-            {startPoint && <Marker coordinate={startPoint} title="Início"><Ionicons name="location" size={40} color="#22c55e" /></Marker>}
-            {endPoint && (
+            {startPoint && (
+              <Marker coordinate={startPoint} title={isGoalMode ? "Início/Fim" : "Início"}>
+                <Ionicons name={isGoalMode ? "refresh-circle" : "location"} size={40} color={isGoalMode ? "#22d3ee" : "#22c55e"} />
+              </Marker>
+            )}
+            {endPoint && !isGoalMode && (
               <Marker
                 coordinate={endPoint}
                 title="Fim"
@@ -307,7 +410,13 @@ export default function SuggestRouteScreen() {
                 <Ionicons name="flag" size={40} color="#ef4444" />
               </Marker>
             )}
-            {routeCoordinates.length > 0 && <Polyline coordinates={routeCoordinates} strokeColor="#ffd700" strokeWidth={5} />}
+            {isGoalMode ? (
+              activeGoalCoordinates.length > 0 ? (
+                <Polyline coordinates={activeGoalCoordinates} strokeColor="#ffd700" strokeWidth={5} />
+              ) : null
+            ) : routeCoordinates.length > 0 ? (
+              <Polyline coordinates={routeCoordinates} strokeColor="#ffd700" strokeWidth={5} />
+            ) : null}
         </MapView>
       )}
 
@@ -330,16 +439,55 @@ export default function SuggestRouteScreen() {
           </View>
         ) : (
           <Text style={styles.instructionText}>
-            {!startPoint
+            {isGoalMode
+              ? !startPoint
+                ? "1. Marque o INÍCIO para gerar rota circular por meta de km."
+                : "2. Ajuste a meta e gere novamente para novas opções."
+              : !startPoint
               ? "1. Marque o INÍCIO (cálculo automático de rota real)"
-                : !endPoint
-                ? "2. Marque o FIM para calcular por ruas/trilhas"
-                : "3. Toque no mapa ou arraste o FIM para ajustar a rota em tempo real."}
+              : !endPoint
+              ? "2. Marque o FIM para calcular por ruas/trilhas"
+              : "3. Toque no mapa ou arraste o FIM para ajustar a rota em tempo real."}
           </Text>
         )}
       </View>
 
-      <View style={styles.providerFloatingBar}>
+      <View style={styles.goalModeBox}>
+        <TouchableOpacity
+          style={[styles.goalModeBtn, isGoalMode ? styles.goalModeBtnActive : null]}
+          onPress={() => {
+            setIsGoalMode((current) => !current);
+            handleClearPoints();
+          }}
+        >
+          <Ionicons name="repeat" size={18} color={isGoalMode ? "#000" : "#fff"} />
+          <Text style={[styles.goalModeBtnText, isGoalMode ? styles.goalModeBtnTextActive : null]}>
+            Meta ida+volta
+          </Text>
+        </TouchableOpacity>
+        {isGoalMode ? (
+          <View style={styles.goalInputWrap}>
+            <TextInput
+              style={styles.goalInput}
+              value={distanceGoalKm}
+              onChangeText={setDistanceGoalKm}
+              keyboardType="numeric"
+              placeholder="70"
+              placeholderTextColor="#8a8a8a"
+            />
+            <Text style={styles.goalInputUnit}>km</Text>
+            <TouchableOpacity
+              style={[styles.goalGenerateBtn, (!startPoint || isCalculating) ? styles.submitBtnDisabled : null]}
+              onPress={() => startPoint && handleGenerateGoalRoute(startPoint)}
+              disabled={!startPoint || isCalculating}
+            >
+              <Text style={styles.goalGenerateBtnText}>Gerar</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+      </View>
+
+      <View style={[styles.providerFloatingBar, isGoalMode ? styles.providerFloatingBarGoal : null]}>
         <TouchableOpacity 
           style={[styles.providerBtn, provedorRota === 'google' && styles.providerBtnActive]} 
           onPress={() => setProvedorRota('google')}
@@ -363,7 +511,26 @@ export default function SuggestRouteScreen() {
         </TouchableOpacity>
       </View>
 
-      {startPoint && endPoint && !isFormVisible ? (
+      {isGoalMode && routeAlternatives.length > 0 ? (
+        <View style={styles.alternativesBox}>
+          <Text style={styles.alternativesTitle}>Rotas encontradas. Escolha 1 opção:</Text>
+          <View style={styles.alternativesRow}>
+            {routeAlternatives.map((item, index) => (
+              <TouchableOpacity
+                key={`option-${index}`}
+                style={[styles.altChip, index === selectedAlternativeIndex ? styles.altChipActive : null]}
+                onPress={() => selectAlternative(index)}
+              >
+                <Text style={[styles.altChipText, index === selectedAlternativeIndex ? styles.altChipTextActive : null]}>
+                  {`${(item.distanceMeters / 1000).toFixed(1)}km`}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      ) : null}
+
+      {(isGoalMode ? routeCoordinates.length > 1 : startPoint && endPoint) && !isFormVisible ? (
         <View style={styles.confirmBox}>
           <TouchableOpacity style={styles.confirmBtn} onPress={() => setIsFormVisible(true)}>
             <Ionicons name="checkmark-circle-outline" size={20} color="#000" />
@@ -392,6 +559,12 @@ export default function SuggestRouteScreen() {
                           <View style={styles.distBadge}>
                             <Ionicons name="time-outline" size={16} color="#000" />
                             <Text style={styles.distText}>{tempoCalculado}</Text>
+                          </View>
+                        ) : null}
+                        {typeof unpavedRatio === "number" ? (
+                          <View style={styles.distBadge}>
+                            <Ionicons name="leaf-outline" size={16} color="#000" />
+                            <Text style={styles.distText}>{`${Math.round(unpavedRatio * 100)}% terra`}</Text>
                           </View>
                         ) : null}
                       </View>
@@ -458,7 +631,11 @@ export default function SuggestRouteScreen() {
                   <Text style={styles.label}>Dicas</Text>
                   <TextInput style={[styles.input, { height: 80, textAlignVertical: 'top' }]} placeholder="Tem muita subida?" placeholderTextColor="#666" multiline value={descricao} onChangeText={setDescricao} />
 
-                  <TouchableOpacity style={[styles.submitBtn, (!startPoint || !endPoint || isCalculating) && styles.submitBtnDisabled]} onPress={handleEnviarSugestao} disabled={isCalculating}>
+                  <TouchableOpacity
+                    style={[styles.submitBtn, (!startPoint || routeCoordinates.length < 2 || isCalculating) && styles.submitBtnDisabled]}
+                    onPress={handleEnviarSugestao}
+                    disabled={isCalculating}
+                  >
                     <Text style={styles.submitBtnText}>
                       {visibility === "public" ? "ENVIAR PARA ANÁLISE" : "SALVAR ROTA"}
                     </Text>
@@ -481,6 +658,72 @@ const styles = StyleSheet.create({
   iconButton: { backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 50, borderWidth: 1, borderColor: '#333' },
   instructionBox: { position: 'absolute', top: 110, alignSelf: 'center', backgroundColor: '#ffd700', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 20, elevation: 5 },
   instructionText: { color: '#000', fontWeight: 'bold', fontSize: 14 },
+  goalModeBox: {
+    position: 'absolute',
+    top: 228,
+    left: 16,
+    right: 16,
+    alignItems: 'center',
+    gap: 8,
+  },
+  goalModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    borderColor: '#333',
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  goalModeBtnActive: {
+    backgroundColor: '#ffd700',
+    borderColor: '#ffd700',
+  },
+  goalModeBtnText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
+  goalModeBtnTextActive: {
+    color: '#000',
+  },
+  goalInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  goalInput: {
+    backgroundColor: '#1A1A1A',
+    color: '#fff',
+    borderWidth: 1,
+    borderColor: '#444',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    minWidth: 70,
+    textAlign: 'center',
+    fontWeight: 'bold',
+  },
+  goalInputUnit: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  goalGenerateBtn: {
+    backgroundColor: '#ffd700',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  goalGenerateBtnText: {
+    color: '#000',
+    fontWeight: 'bold',
+  },
   providerFloatingBar: {
     position: 'absolute',
     top: 170,
@@ -511,6 +754,51 @@ const styles = StyleSheet.create({
     fontSize: 13
   },
   providerBtnTextActive: {
+    color: '#000',
+  },
+  providerFloatingBarGoal: {
+    top: 340,
+  },
+  alternativesBox: {
+    position: 'absolute',
+    top: 410,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    borderWidth: 1,
+    borderColor: '#333',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    minWidth: 220,
+  },
+  alternativesTitle: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 12,
+    marginBottom: 6,
+  },
+  alternativesRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  altChip: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#444',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  altChipActive: {
+    backgroundColor: '#ffd700',
+    borderColor: '#ffd700',
+  },
+  altChipText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 12,
+  },
+  altChipTextActive: {
     color: '#000',
   },
   confirmBox: { position: 'absolute', bottom: 24, left: 16, right: 16 },
