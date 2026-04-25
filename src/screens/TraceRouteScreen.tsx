@@ -1,5 +1,4 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useNavigation } from "@react-navigation/native";
 import * as Location from "expo-location";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -17,6 +16,7 @@ import {
 import MapView, { MapPressEvent, Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
+import { useExpoNavigationBridge } from "../navigation/useExpoNavigationBridge";
 import { calculateDistanceKm, saveManualRoute } from "../services/routeService";
 import { FALLBACK_REGION, toCoordinate } from "../utils/geo";
 
@@ -44,7 +44,7 @@ const getPathDistanceKm = (points: Coordinate[]) => {
 };
 
 export default function TraceRouteScreen() {
-  const navigation = useNavigation<any>();
+  const navigation = useExpoNavigationBridge();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
 
@@ -84,6 +84,7 @@ export default function TraceRouteScreen() {
   }, []);
 
   const distanceKm = useMemo(() => getPathDistanceKm(points), [points]);
+  const sheetBottomPadding = Math.max(insets.bottom + 34, 56);
   const intermediatePoints = useMemo(
     () => (points.length > 2 ? points.slice(1, -1) : []),
     [points]
@@ -219,7 +220,10 @@ export default function TraceRouteScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.sheetWrap}
       >
-        <ScrollView contentContainerStyle={styles.sheet} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={[styles.sheet, { paddingBottom: sheetBottomPadding }]}
+          showsVerticalScrollIndicator={false}
+        >
           <Text style={styles.sheetTitle}>Traçar rota</Text>
 
           <Text style={styles.label}>Nome da rota</Text>

@@ -31,15 +31,34 @@ export type RoundTripResult = DirectionsResult & {
 };
 
 const GRAPHHOPPER_URL = "https://graphhopper.com/api/1/route";
+const GOOGLE_DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json";
 const MAX_WAYPOINTS = 23;
 const EARTH_RADIUS_METERS = 6371000;
 const UNPAVED_KEYWORDS = ["unpaved", "dirt", "gravel", "ground", "earth", "mud", "sand", "path"];
 const GRAPH_HOPPER_RATE_LIMIT_TEXT = "minutely api limit heavily violated";
+const GRAPH_HOPPER_WRONG_CREDENTIALS_TEXT = "wrong credentials";
+const ROUND_TRIP_CACHE_TTL_MS = 10 * 60 * 1000;
+const ROUND_TRIP_CACHE_MAX_ENTRIES = 120;
+
+type RoundTripCacheValue = {
+  expiresAt: number;
+  value: { best: RoundTripResult; alternatives: RoundTripResult[] };
+};
+
+const roundTripCache = new Map<string, RoundTripCacheValue>();
 
 const getGraphHopperApiKey = () => {
   const key = process.env.EXPO_PUBLIC_GRAPHHOPPER_API_KEY;
   if (!key || key.startsWith("SET_VIA_")) {
     throw new Error("GraphHopper API key não configurada (EXPO_PUBLIC_GRAPHHOPPER_API_KEY).");
+  }
+  return key;
+};
+
+const getGoogleDirectionsApiKey = () => {
+  const key = process.env.EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY;
+  if (!key || key.startsWith("SET_VIA_")) {
+    throw new Error("Google Directions API key não configurada (EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY).");
   }
   return key;
 };
@@ -50,6 +69,12 @@ const mapActivityMode = (activityType?: string): DirectionsMode => {
   const normalized = String(activityType || "").toLowerCase();
   if (normalized.includes("cicl")) return "bicycling";
   if (normalized.includes("carro")) return "driving";
+  return "walking";
+};
+
+const mapGraphHopperProfileToGoogleMode = (profile?: GraphHopperProfile): DirectionsMode => {
+  if (profile === "car") return "driving";
+  if (profile === "bike" || profile === "mtb") return "bicycling";
   return "walking";
 };
 
@@ -126,10 +151,56 @@ const decodeGraphHopperPolyline = (encoded: string, withElevation = false): Coor
   return points;
 };
 
+const decodeGooglePolyline = (encoded: string): Coordinate[] => {
+  if (!encoded) return [];
+
+  const coordinates: Coordinate[] = [];
+  let index = 0;
+  let latitude = 0;
+  let longitude = 0;
+
+  while (index < encoded.length) {
+    let result = 0;
+    let shift = 0;
+    let byte = 0;
+
+    do {
+      byte = encoded.charCodeAt(index) - 63;
+      index += 1;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+
+    const deltaLat = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    latitude += deltaLat;
+
+    result = 0;
+    shift = 0;
+    do {
+      byte = encoded.charCodeAt(index) - 63;
+      index += 1;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+
+    const deltaLng = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    longitude += deltaLng;
+
+    coordinates.push({
+      latitude: latitude / 1e5,
+      longitude: longitude / 1e5,
+      altitude: null,
+    });
+  }
+
+  return coordinates;
+};
+
 const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
 const toDegrees = (radians: number) => (radians * 180) / Math.PI;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const roundForCache = (value: number, precision = 4) => Number(value.toFixed(precision));
 
 const distanceBetween = (a: Coordinate, b: Coordinate) => {
   const lat1 = toRadians(a.latitude);
@@ -168,6 +239,96 @@ const moveCoordinateByBearing = (origin: Coordinate, bearingDeg: number, distanc
     latitude: toDegrees(lat2),
     longitude: toDegrees(lng2),
   };
+};
+
+const buildLoopWaypoints = (
+  origin: Coordinate,
+  targetDistanceMeters: number,
+  seedBearingDeg: number,
+  variant?: {
+    legFactor: number;
+    spreadDeg: number;
+    mirrored: boolean;
+  }
+): Coordinate[] => {
+  const legFactor = variant?.legFactor ?? 1 / 3;
+  const spreadDeg = variant?.spreadDeg ?? 120;
+  const mirrored = variant?.mirrored ?? false;
+
+  const legMeters = clamp(targetDistanceMeters * legFactor, 450, 18000);
+  const secondBearing = mirrored ? seedBearingDeg - spreadDeg : seedBearingDeg + spreadDeg;
+  const first = moveCoordinateByBearing(origin, seedBearingDeg, legMeters);
+  const second = moveCoordinateByBearing(origin, secondBearing, legMeters);
+  return [first, second];
+};
+
+const buildRouteSegmentKey = (a: Coordinate, b: Coordinate): string => {
+  const pointA = `${a.latitude.toFixed(4)}|${a.longitude.toFixed(4)}`;
+  const pointB = `${b.latitude.toFixed(4)}|${b.longitude.toFixed(4)}`;
+  return pointA < pointB ? `${pointA}->${pointB}` : `${pointB}->${pointA}`;
+};
+
+const estimateOverlapRatio = (coordinates: Coordinate[]): number => {
+  if (!Array.isArray(coordinates) || coordinates.length < 3) return 0;
+
+  const counts = new Map<string, number>();
+  let totalSegments = 0;
+  let repeatedSegments = 0;
+
+  for (let i = 1; i < coordinates.length; i += 1) {
+    const key = buildRouteSegmentKey(coordinates[i - 1], coordinates[i]);
+    if (!key) continue;
+    totalSegments += 1;
+    const prev = counts.get(key) || 0;
+    if (prev > 0) repeatedSegments += 1;
+    counts.set(key, prev + 1);
+  }
+
+  if (totalSegments === 0) return 0;
+  return clamp(repeatedSegments / totalSegments, 0, 1);
+};
+
+const estimateLoopClosureScore = (coordinates: Coordinate[]): number => {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return 0;
+  const start = coordinates[0];
+  const end = coordinates[coordinates.length - 1];
+  const closureMeters = distanceBetween(start, end);
+  // 0m => score 1.0, >=180m => score 0.0
+  return clamp(1 - closureMeters / 180, 0, 1);
+};
+
+const pruneRoundTripCache = (nowMs: number) => {
+  for (const [key, entry] of roundTripCache.entries()) {
+    if (!entry || entry.expiresAt <= nowMs) {
+      roundTripCache.delete(key);
+    }
+  }
+
+  if (roundTripCache.size <= ROUND_TRIP_CACHE_MAX_ENTRIES) return;
+
+  const overflow = roundTripCache.size - ROUND_TRIP_CACHE_MAX_ENTRIES;
+  const keysToDrop = Array.from(roundTripCache.keys()).slice(0, overflow);
+  keysToDrop.forEach((key) => roundTripCache.delete(key));
+};
+
+const buildRoundTripCacheKey = (input: {
+  origin: Coordinate;
+  targetDistanceKm: number;
+  profile: GraphHopperProfile;
+  alternatives: number;
+  toleranceRatio: number;
+  engine: "auto" | "google" | "graphhopper";
+}) => {
+  const { origin, targetDistanceKm, profile, alternatives, toleranceRatio, engine } = input;
+  return [
+    engine,
+    profile,
+    roundForCache(origin.latitude, 4),
+    roundForCache(origin.longitude, 4),
+    roundForCache(Number(targetDistanceKm || 0), 2),
+    alternatives,
+    roundForCache(toleranceRatio, 3),
+  ].join("|");
 };
 
 const buildPolylineCumulativeDistances = (coordinates: Coordinate[]) => {
@@ -213,45 +374,15 @@ const isGraphHopperRateLimitError = (error: unknown) => {
   return message.includes(GRAPH_HOPPER_RATE_LIMIT_TEXT);
 };
 
-const buildOutAndBackRoute = (oneWay: DirectionsResult): DirectionsResult => {
-  const outward = oneWay.coordinates;
-  if (!Array.isArray(outward) || outward.length < 2) {
-    return oneWay;
-  }
-
-  const returnPath = outward
-    .slice(0, outward.length - 1)
-    .reverse()
-    .map((point) => ({
-      latitude: point.latitude,
-      longitude: point.longitude,
-      altitude: point.altitude ?? null,
-    }));
-
-  const coordinates = [...outward, ...returnPath];
-  const distanceMeters = oneWay.distanceMeters * 2;
-  const durationSeconds = oneWay.durationSeconds * 2;
-
-  return {
-    coordinates,
-    distanceMeters,
-    durationSeconds,
-    distanceText: `${(distanceMeters / 1000).toFixed(1)} km`,
-    durationText: `${Math.max(1, Math.round(durationSeconds / 60))} min`,
-    unpavedRatio: oneWay.unpavedRatio ?? null,
-  };
+const isGraphHopperCredentialsError = (error: unknown) => {
+  const message = String((error as any)?.message || "").toLowerCase();
+  return message.includes(GRAPH_HOPPER_WRONG_CREDENTIALS_TEXT);
 };
 
 export const travelModeFromActivity = mapActivityMode;
 export const travelProfileFromActivity = (activityType?: string): GraphHopperProfile => {
   const mode = mapActivityMode(activityType);
   if (mode === "bicycling") return "mtb";
-  if (mode === "driving") return "car";
-  return "foot";
-};
-
-const graphHopperProfileFromMode = (mode?: DirectionsMode): GraphHopperProfile => {
-  if (mode === "bicycling") return "bike";
   if (mode === "driving") return "car";
   return "foot";
 };
@@ -354,6 +485,28 @@ export const fetchGraphHopperDirections = async ({
       unpavedRatio,
     };
   } catch (error: any) {
+    if (isGraphHopperRateLimitError(error)) {
+      console.warn(
+        "[GraphHopper] Rate limit atingido. Aplicando fallback para Google Directions."
+      );
+      return fetchGoogleDirections({
+        origin,
+        destination,
+        waypoints,
+        mode: mapGraphHopperProfileToGoogleMode(profile),
+      });
+    }
+    if (isGraphHopperCredentialsError(error)) {
+      console.warn(
+        "[GraphHopper] Credenciais inválidas. Aplicando fallback para Google Directions."
+      );
+      return fetchGoogleDirections({
+        origin,
+        destination,
+        waypoints,
+        mode: mapGraphHopperProfileToGoogleMode(profile),
+      });
+    }
     console.error("Erro ao buscar rota no GraphHopper:", error?.message || String(error));
     throw error;
   }
@@ -365,6 +518,7 @@ type FetchRoundTripInput = {
   profile?: GraphHopperProfile;
   alternatives?: number;
   toleranceRatio?: number;
+  engine?: "auto" | "google" | "graphhopper";
 };
 
 export const fetchRoundTripByDistance = async ({
@@ -373,70 +527,144 @@ export const fetchRoundTripByDistance = async ({
   profile = "mtb",
   alternatives = 3,
   toleranceRatio = 0.2,
+  engine = "auto",
 }: FetchRoundTripInput): Promise<{ best: RoundTripResult; alternatives: RoundTripResult[] }> => {
+  const now = Date.now();
+  pruneRoundTripCache(now);
+  const cacheKey = buildRoundTripCacheKey({
+    origin,
+    targetDistanceKm,
+    profile,
+    alternatives,
+    toleranceRatio,
+    engine,
+  });
+  const cached = roundTripCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
   const targetMeters = Math.max(1000, Number(targetDistanceKm || 0) * 1000);
   if (!Number.isFinite(targetMeters) || targetMeters <= 0) {
     throw new Error("Meta de distância inválida.");
   }
 
-  const bearings = [0, 45, 90, 135, 180, 225, 270, 315];
-  const oneWayTargetMeters = clamp(targetMeters / 2, 700, 35000);
+  const bearings = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+  const loopVariants = [
+    { legFactor: 0.29, spreadDeg: 100, mirrored: false },
+    { legFactor: 0.33, spreadDeg: 120, mirrored: false },
+    { legFactor: 0.37, spreadDeg: 140, mirrored: false },
+    { legFactor: 0.33, spreadDeg: 120, mirrored: true },
+    { legFactor: 0.38, spreadDeg: 130, mirrored: true },
+  ];
   const candidates: RoundTripResult[] = [];
   const targetAlternatives = Math.max(1, alternatives);
-  const maxAttempts = Math.min(bearings.length, Math.max(3, targetAlternatives));
+  const maxAttempts = Math.min(
+    bearings.length * loopVariants.length,
+    Math.max(10, targetAlternatives * 7)
+  );
+  const useGoogleForAsphalt = engine === "google" || (engine === "auto" && profile === "car");
+  let attempt = 0;
+  let rateLimitDetected = false;
+  let lastError: unknown = null;
 
-  for (let i = 0; i < maxAttempts; i += 1) {
-    const bearing = bearings[i];
-    const destination = moveCoordinateByBearing(origin, bearing, oneWayTargetMeters);
+  for (const bearing of bearings) {
+    for (const variant of loopVariants) {
+      if (attempt >= maxAttempts) break;
+      attempt += 1;
 
-    try {
-      const outwardRoute = await fetchGraphHopperDirections({
-        origin,
-        destination,
-        profile,
-      });
-      const route = buildOutAndBackRoute(outwardRoute);
+      try {
+        const route = useGoogleForAsphalt
+          ? await fetchGoogleDirections({
+              origin,
+              destination: origin,
+              waypoints: buildLoopWaypoints(origin, targetMeters, bearing, variant),
+              mode: "driving",
+            })
+          : await fetchGraphHopperDirections({
+              origin,
+              destination: origin,
+              waypoints: buildLoopWaypoints(origin, targetMeters, bearing, variant),
+              profile,
+            });
 
-      const delta = Math.abs(route.distanceMeters - targetMeters);
-      const normalizedDistanceScore = clamp(1 - delta / (targetMeters * Math.max(0.05, toleranceRatio)), 0, 1);
-      const terrainScore = route.unpavedRatio ?? (profile === "mtb" || profile === "foot" ? 0.55 : 0.3);
-      const score = terrainScore * 0.65 + normalizedDistanceScore * 0.35;
-
-      candidates.push({
-        ...route,
-        score,
-        distanceDeltaMeters: delta,
-      });
-
-      if (candidates.length >= targetAlternatives) {
-        break;
-      }
-    } catch (error) {
-      if (isGraphHopperRateLimitError(error)) {
-        // Retorna o melhor que já conseguiu calcular ao invés de falhar tudo.
-        if (candidates.length > 0) break;
-        throw new Error(
-          "Limite de requisições do GraphHopper atingido agora. Aguarde 1 minuto e tente novamente."
+        const delta = Math.abs(route.distanceMeters - targetMeters);
+        const normalizedDistanceScore = clamp(
+          1 - delta / (targetMeters * Math.max(0.05, toleranceRatio)),
+          0,
+          1
         );
+        const terrainScore = route.unpavedRatio ?? (profile === "mtb" || profile === "foot" ? 0.55 : 0.3);
+        const overlapRatio = estimateOverlapRatio(route.coordinates);
+        const closureScore = estimateLoopClosureScore(route.coordinates);
+        const loopQualityScore = (1 - overlapRatio) * 0.75 + closureScore * 0.25;
+        const score =
+          normalizedDistanceScore * 0.45 +
+          loopQualityScore * 0.35 +
+          terrainScore * 0.2;
+
+        candidates.push({
+          ...route,
+          score,
+          distanceDeltaMeters: delta,
+        });
+
+        if (candidates.length >= targetAlternatives) {
+          const currentBest = candidates
+            .slice()
+            .sort((a, b) => b.score - a.score)[0];
+          if (currentBest && currentBest.score >= 0.62) {
+            break;
+          }
+        }
+      } catch (error) {
+        lastError = error;
+        if (isGraphHopperRateLimitError(error)) {
+          rateLimitDetected = true;
+          if (candidates.length > 0) break;
+          continue;
+        }
+        // Tenta próximo bearing/variante em vez de abortar o cálculo completo.
+        continue;
       }
-      throw error;
     }
+    if (candidates.length >= targetAlternatives) {
+      const currentBest = candidates
+        .slice()
+        .sort((a, b) => b.score - a.score)[0];
+      if (currentBest && currentBest.score >= 0.62) break;
+    }
+    if (rateLimitDetected && candidates.length > 0) break;
   }
 
   const sorted = candidates.sort((a, b) => b.score - a.score);
   if (sorted.length === 0) {
+    if (rateLimitDetected) {
+      throw new Error(
+        "Limite de requisições do GraphHopper atingido agora. Aguarde 1 minuto e tente novamente."
+      );
+    }
+    if (lastError && (lastError as any)?.message) {
+      throw new Error(String((lastError as any).message));
+    }
     throw new Error("Não foi possível gerar rota circular para a meta informada.");
   }
 
-  return {
+  const result = {
     best: sorted[0],
     alternatives: sorted.slice(0, targetAlternatives),
   };
+
+  roundTripCache.set(cacheKey, {
+    expiresAt: now + ROUND_TRIP_CACHE_TTL_MS,
+    value: result,
+  });
+
+  return result;
 };
 
 /**
- * Compatibilidade retroativa para chamadas antigas que usavam Google Directions.
- * A engine de roteamento foi migrada para GraphHopper.
+ * Busca rotas no Google Directions API (asfalto/estradas).
  */
 export const fetchGoogleDirections = async ({
   origin,
@@ -444,10 +672,62 @@ export const fetchGoogleDirections = async ({
   waypoints = [],
   mode = "walking",
 }: FetchDirectionsInput): Promise<DirectionsResult> => {
-  return fetchGraphHopperDirections({
-    origin,
-    destination,
-    waypoints,
-    profile: graphHopperProfileFromMode(mode),
+  const apiKey = getGoogleDirectionsApiKey();
+  const sampledWaypoints = pickWaypoints(waypoints);
+
+  const params = new URLSearchParams({
+    origin: encodeCoordinate(origin),
+    destination: encodeCoordinate(destination),
+    mode,
+    key: apiKey,
+    language: "pt-BR",
+    region: "br",
   });
+
+  if (sampledWaypoints.length > 0) {
+    const points = sampledWaypoints.map((wp) => encodeCoordinate(wp)).join("|");
+    params.set("waypoints", points);
+  }
+
+  try {
+    const response = await fetch(`${GOOGLE_DIRECTIONS_URL}?${params.toString()}`);
+    const data = await response.json().catch(() => null);
+    const status = data?.status;
+
+    if (!response.ok || status !== "OK") {
+      const apiError =
+        data?.error_message || data?.routes?.[0]?.warnings?.[0] || status || response.statusText;
+      throw new Error(`Google Directions: ${apiError || "falha ao calcular rota."}`);
+    }
+
+    const route = data?.routes?.[0];
+    const legs = Array.isArray(route?.legs) ? route.legs : [];
+    const polyline = String(route?.overview_polyline?.points || "");
+    const coordinates = decodeGooglePolyline(polyline);
+
+    if (coordinates.length === 0) {
+      throw new Error("Rota sem pontos válidos retornada pelo Google.");
+    }
+
+    const distanceMeters = legs.reduce(
+      (total: number, leg: any) => total + Number(leg?.distance?.value || 0),
+      0
+    );
+    const durationSeconds = legs.reduce(
+      (total: number, leg: any) => total + Number(leg?.duration?.value || 0),
+      0
+    );
+
+    return {
+      coordinates,
+      distanceMeters,
+      durationSeconds,
+      distanceText: `${(distanceMeters / 1000).toFixed(1)} km`,
+      durationText: `${Math.max(1, Math.round(durationSeconds / 60))} min`,
+      unpavedRatio: null,
+    };
+  } catch (error: any) {
+    console.error("Erro ao buscar rota no Google Directions:", error?.message || String(error));
+    throw error;
+  }
 };

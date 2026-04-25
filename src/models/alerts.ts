@@ -1,4 +1,11 @@
 export type AlertStatus = "ativo" | "resolvido" | "expirado" | "removido";
+export type AlertCategory = "temporario" | "persistente";
+export type AlertLifecycleStatus =
+  | "pending"
+  | "active"
+  | "rejected"
+  | "resolved"
+  | "archived";
 
 export type AlertReportReason =
   | "informacao_falsa"
@@ -59,6 +66,7 @@ export type TrackTrailRoute = {
 export type TrailAlert = {
   id: string;
   type: AlertType;
+  category: AlertCategory;
   description: string;
   latitude: number;
   longitude: number;
@@ -84,6 +92,19 @@ export type TrailAlert = {
   moderationStatus?: "none" | "review_pending" | "reviewed";
   reviewRequestedAt?: string | null;
   reviewRequestedBy?: string | null;
+  lifecycleStatus?: AlertLifecycleStatus;
+  archivedAt?: string | null;
+  expiredAt?: string | null;
+  lastConfirmedAt?: string | null;
+  notFoundCount?: number;
+  feedbackByUser?: Record<
+    string,
+    {
+      kind: "confirm" | "not_found";
+      createdAt: string;
+      createdAtMs: number;
+    }
+  >;
 };
 
 export const ALERT_TYPE_META: Record<

@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import React from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { colors, radius, spacing, typography } from "../src/theme/designSystem";
 
 export default function AdminUserList({
@@ -11,6 +12,20 @@ export default function AdminUserList({
   onActionPress,
   disableActionForUid,
 }) {
+  const copyToClipboard = async (value, label) => {
+    const safeValue = String(value || "").trim();
+    if (!safeValue) {
+      Alert.alert("Indisponível", `Este usuário não possui ${label} cadastrado.`);
+      return;
+    }
+    try {
+      await Clipboard.setStringAsync(safeValue);
+      Alert.alert("Copiado", `${label} copiado para a área de transferência.`);
+    } catch {
+      Alert.alert("Erro", `Não foi possível copiar ${label}.`);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>{title}</Text>
@@ -29,6 +44,23 @@ export default function AdminUserList({
                   {user.fullName || user.username || "Usuário"}
                 </Text>
                 <Text style={styles.userEmail}>{user.email || "Sem e-mail"}</Text>
+                <Text style={styles.userAddress}>{user.address || "Sem endereço"}</Text>
+                <View style={styles.copyRow}>
+                  <TouchableOpacity
+                    onPress={() => copyToClipboard(user.email, "E-mail")}
+                    style={styles.copyBtn}
+                  >
+                    <Ionicons name="copy-outline" size={14} color={colors.textPrimary} />
+                    <Text style={styles.copyBtnText}>Copiar e-mail</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => copyToClipboard(user.address, "Endereço")}
+                    style={styles.copyBtn}
+                  >
+                    <Ionicons name="copy-outline" size={14} color={colors.textPrimary} />
+                    <Text style={styles.copyBtnText}>Copiar endereço</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <View style={styles.badge}>
@@ -89,6 +121,33 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 12,
     marginTop: 2,
+  },
+  userAddress: {
+    color: colors.textMuted,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  copyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+  },
+  copyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    backgroundColor: colors.surface,
+  },
+  copyBtnText: {
+    color: colors.textPrimary,
+    fontSize: 11,
+    fontWeight: "600",
   },
   badge: {
     backgroundColor: colors.secondary,

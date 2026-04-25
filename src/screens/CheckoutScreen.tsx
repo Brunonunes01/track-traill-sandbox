@@ -41,7 +41,7 @@ export default function CheckoutScreen() {
 
     Alert.alert(
       "Pagamento Aprovado!",
-      "A sua compra foi confirmada com sucesso. Aproveite os novos recursos do Track & Trail!",
+      "A sua compra foi confirmada com sucesso. Aproveite os novos recursos do Track-Traill!",
       [
         {
           text: "Ir para o Dashboard",

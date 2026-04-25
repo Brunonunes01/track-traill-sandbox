@@ -3,7 +3,6 @@ import { onValue, push, ref, remove, set } from "firebase/database";
 import { auth, database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 import { TrackTrailRoute } from "../models/alerts";
 import { loadOfflineCache, saveOfflineCache } from "../storage/offlineCache";
-import { listOfflineRoutes } from "../storage/offlineRoutes";
 
 const OFFLINE_CACHE_OFFICIAL_ROUTES_KEY = "official_routes";
 const OFFLINE_CACHE_USER_ROUTES_PREFIX = "user_routes:";
@@ -145,17 +144,6 @@ const normalizeRoute = (id: string, raw: any): TrackTrailRoute => {
   };
 };
 
-const mergeRoutesById = (base: TrackTrailRoute[], extra: TrackTrailRoute[]) => {
-  const byId = new Map<string, TrackTrailRoute>();
-  base.forEach((route) => {
-    if (route?.id) byId.set(route.id, route);
-  });
-  extra.forEach((route) => {
-    if (route?.id) byId.set(route.id, route);
-  });
-  return Array.from(byId.values());
-};
-
 type SaveManualRouteInput = {
   title: string;
   type: string;
@@ -189,6 +177,7 @@ export const subscribeOfficialRoutes = (
     (snapshot) => {
       if (!snapshot.exists()) {
         onChange([]);
+        saveOfflineCache(OFFLINE_CACHE_OFFICIAL_ROUTES_KEY, []);
         return;
       }
 
@@ -202,23 +191,22 @@ export const subscribeOfficialRoutes = (
     },
     async (error) => {
       const fallback = await loadOfflineCache<TrackTrailRoute[]>(OFFLINE_CACHE_OFFICIAL_ROUTES_KEY);
-      const downloadedRoutes = (await listOfflineRoutes()).map((item) => item.route);
-      const downloadedPublic = downloadedRoutes.filter(
-        (route) => route.startPoint && (route.visibility || "public") === "public"
-      );
-      const combinedFallback = mergeRoutesById(fallback?.data || [], downloadedPublic);
+      const cachedOfficialRoutes = fallback?.data || [];
+      const errorMessage = normalizeFirebaseErrorMessage(error);
+      const permissionDenied = isPermissionDeniedMessage(errorMessage);
 
-      if (combinedFallback.length) {
-        onChange(combinedFallback);
-        // Só reporta erro se for algo crítico (permissão)
-        const errorMessage = normalizeFirebaseErrorMessage(error);
-        if (isPermissionDeniedMessage(errorMessage)) {
-          onError?.(errorMessage);
-        } else {
-           // Mensagem padronizada que a HomeScreen ignora na UI (via isOfflineFallbackMessage)
-           onError?.("Sem conexão. Exibindo rotas em cache offline.");
-           console.log("[routes] Falling back to offline cache due to connection issue.");
-        }
+      // Em erro de permissão, não exibir cache para evitar "rotas fantasmas" após remoção no backend.
+      if (permissionDenied) {
+        onChange([]);
+        onError?.(errorMessage);
+        return;
+      }
+
+      if (cachedOfficialRoutes.length) {
+        onChange(cachedOfficialRoutes);
+        // Mensagem padronizada que a HomeScreen ignora na UI (via isOfflineFallbackMessage)
+        onError?.("Sem conexão. Exibindo rotas em cache offline.");
+        console.log("[routes] Falling back to offline cache due to connection issue.");
         return;
       }
       onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar rotas."));
@@ -246,6 +234,7 @@ export const subscribeUserRoutes = (
     (snapshot) => {
       if (!snapshot.exists()) {
         onChange([]);
+        saveOfflineCache(cacheKey, []);
         return;
       }
 
@@ -262,18 +251,19 @@ export const subscribeUserRoutes = (
     },
     async (error) => {
       const fallback = await loadOfflineCache<TrackTrailRoute[]>(cacheKey);
-      const downloadedRoutes = (await listOfflineRoutes()).map((item) => item.route);
-      const downloadedFromUser = downloadedRoutes.filter((route) => route.startPoint && route.userId === userId);
-      const combinedFallback = mergeRoutesById(fallback?.data || [], downloadedFromUser);
+      const cachedUserRoutes = fallback?.data || [];
+      const errorMessage = normalizeFirebaseErrorMessage(error);
+      const permissionDenied = isPermissionDeniedMessage(errorMessage);
 
-      if (combinedFallback.length) {
-        onChange(combinedFallback);
-        const errorMessage = normalizeFirebaseErrorMessage(error);
-        if (isPermissionDeniedMessage(errorMessage)) {
-          onError?.(errorMessage);
-        } else {
-          onError?.("Sem conexão. Exibindo suas rotas salvas em cache offline.");
-        }
+      if (permissionDenied) {
+        onChange([]);
+        onError?.(errorMessage);
+        return;
+      }
+
+      if (cachedUserRoutes.length) {
+        onChange(cachedUserRoutes);
+        onError?.("Sem conexão. Exibindo suas rotas salvas em cache offline.");
         return;
       }
       onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar suas rotas."));

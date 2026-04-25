@@ -25,8 +25,9 @@ import RouteMarker from "../components/RouteMarker";
 import { TrackTrailRoute, TrailAlert } from "../models/alerts";
 import { subscribeAlerts } from "../services/alertService";
 import { auth } from "../../services/connectionFirebase";
+import { ensureUserRole } from "../../services/adminService";
 import { PointOfInterest, POI_TYPE_META } from "../models/poi";
-import { fetchPOIs } from "../services/poiService";
+import { deletePOI, subscribePOIs } from "../services/poiService";
 import { calculateDistanceKm, subscribeOfficialRoutes, subscribeUserRoutes } from "../services/routeService";
 import { FALLBACK_REGION, toCoordinate, toCoordinateArray } from "../utils/geo";
 
@@ -67,6 +68,7 @@ export default function HomeScreen({ navigation }: any) {
   const [poiError, setPoiError] = useState<string | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [uid, setUid] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
   const [authResolved, setAuthResolved] = useState(false);
 
   const mapRef = useRef<MapView>(null);
@@ -85,6 +87,13 @@ export default function HomeScreen({ navigation }: any) {
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       setUid(user?.uid || "");
+      if (!user?.uid) {
+        setIsAdmin(false);
+      } else {
+        ensureUserRole(user.uid, user.email || "")
+          .then((role) => setIsAdmin(role === "admin"))
+          .catch(() => setIsAdmin(false));
+      }
       setAuthResolved(true);
     });
 
@@ -366,34 +375,36 @@ export default function HomeScreen({ navigation }: any) {
 
   useEffect(() => {
     if (!isFocused || !authResolved) return;
-    let mounted = true;
 
-    const loadPOIs = async () => {
-      try {
-        setLoadingPois(true);
-        const incoming = await fetchPOIs();
-        if (!mounted) return;
+    if (!uid) {
+      setPois([]);
+      setPoiError(null);
+      setLoadingPois(false);
+      return;
+    }
+
+    setLoadingPois(true);
+
+    const unsubscribe = subscribePOIs(
+      (incoming) => {
         setPois(incoming);
         setPoiError(null);
-      } catch (error: any) {
-        if (!mounted) return;
-        const message = error?.message || String(error);
+        setLoadingPois(false);
+      },
+      (message) => {
         if (message.toLowerCase().includes("permission_denied") || message.toLowerCase().includes("permissão")) {
-           console.log("[map] POIs permission delayed or denied. Using cache if available.");
+          console.log("[map] POIs permission delayed or denied. Using cache if available.");
         } else {
-           setPoiError(message);
+          setPoiError(message);
         }
-      } finally {
-        if (mounted) setLoadingPois(false);
+        setLoadingPois(false);
       }
-    };
-
-    loadPOIs();
+    );
 
     return () => {
-      mounted = false;
+      unsubscribe();
     };
-  }, [isFocused, authResolved]);
+  }, [isFocused, authResolved, uid]);
 
   const routeDistances = useMemo<RouteDistance[]>(() => {
     return combinedRoutes.map((route): RouteDistance => {
@@ -577,6 +588,36 @@ export default function HomeScreen({ navigation }: any) {
     }
   };
 
+  const handleDeletePOI = () => {
+    if (!selectedPOI) return;
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      Alert.alert("Login necessário", "Entre na conta para excluir um ponto de interesse.");
+      return;
+    }
+
+    Alert.alert(
+      "Excluir ponto de interesse",
+      "Tem certeza que deseja remover este ponto de interesse?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Excluir",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deletePOI(selectedPOI.id, currentUser);
+              setSelectedPOI(null);
+              Alert.alert("POI removido", "Ponto de interesse removido com sucesso.");
+            } catch (error: any) {
+              Alert.alert("Erro", error?.message || "Não foi possível excluir o ponto de interesse.");
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleRegisterAlert = () => {
     navigation.navigate("AlertForm", {
       routeId: selectedRoute?.id,
@@ -605,6 +646,9 @@ export default function HomeScreen({ navigation }: any) {
 
   const activeAlertsForRoute = selectedRoute ? alertsByRoute[selectedRoute.id] || [] : [];
   const selectedRouteActiveAlerts = activeAlertsForRoute.filter((item) => item.status === "ativo");
+  const canDeleteSelectedPOI = Boolean(
+    selectedPOI && uid && (selectedPOI.criadoPor === uid || isAdmin)
+  );
 
   const loading = loadingRoutes || loadingAlerts || loadingPois;
   const tabSafeOffset = Math.max(insets.bottom, 12);
@@ -1058,7 +1102,7 @@ export default function HomeScreen({ navigation }: any) {
 
           <View style={styles.poiMetaRow}>
             <Ionicons name="person-outline" size={14} color="#93c5fd" />
-            <Text style={styles.poiMetaText}>Criado por: {selectedPOI.criadoPor}</Text>
+            <Text style={styles.poiMetaText}>Criado por: {selectedPOI.criadoPorDisplay}</Text>
           </View>
           <View style={styles.poiMetaRow}>
             <Ionicons name="calendar-outline" size={14} color="#a7f3d0" />
@@ -1071,6 +1115,13 @@ export default function HomeScreen({ navigation }: any) {
             <Ionicons name="navigate-outline" size={17} color="#020617" />
             <Text style={styles.poiActionBtnText}>Abrir no mapa</Text>
           </TouchableOpacity>
+
+          {canDeleteSelectedPOI ? (
+            <TouchableOpacity style={styles.poiDeleteBtn} onPress={handleDeletePOI}>
+              <Ionicons name="trash-outline" size={16} color="#fee2e2" />
+              <Text style={styles.poiDeleteBtnText}>Excluir POI</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       ) : null}
 
@@ -1492,6 +1543,23 @@ const styles = StyleSheet.create({
   },
   poiActionBtnText: {
     color: "#020617",
+    fontWeight: "800",
+    fontSize: 13,
+  },
+  poiDeleteBtn: {
+    marginTop: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#7f1d1d",
+    backgroundColor: "#450a0a",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+    paddingVertical: 10,
+  },
+  poiDeleteBtnText: {
+    color: "#fee2e2",
     fontWeight: "800",
     fontSize: 13,
   },

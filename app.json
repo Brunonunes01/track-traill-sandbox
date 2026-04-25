@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "tracktrail",
+    "name": "Track-Traill",
     "slug": "tracktrail",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -11,9 +11,9 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.bruno.tracktrail",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "O Track & Trail precisa da sua localização para rastrear suas atividades e rotas.",
-        "NSLocationAlwaysUsageDescription": "O Track & Trail precisa da sua localização para rastrear suas atividades mesmo com a tela bloqueada.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "O Track & Trail usa localização em segundo plano para continuar gravando trilhas durante a atividade."
+        "NSLocationWhenInUseUsageDescription": "O Track-Traill precisa da sua localização para rastrear suas atividades e rotas.",
+        "NSLocationAlwaysUsageDescription": "O Track-Traill precisa da sua localização para rastrear suas atividades mesmo com a tela bloqueada.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "O Track-Traill usa localização em segundo plano para continuar gravando trilhas durante a atividade."
       }
     },
     "android": {
@@ -27,15 +27,11 @@
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
-        "INTERNET",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_LOCATION"
+        "INTERNET"
       ],
       "config": {
         "googleMaps": {
-          "apiKey": "SET_VIA_EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY"
+          "apiKey": "SET_VIA_EXPO_PUBLIC_GOOGLE_MAPS_API_KEY"
         }
       },
       "package": "com.bruno.tracktrail"
@@ -43,14 +39,14 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/icon.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/LogoTrack.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
@@ -59,14 +55,15 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Permitir que o Track & Trail acesse sua localização para mapear trilhas.",
+          "locationAlwaysAndWhenInUsePermission": "Permitir que o Track-Traill acesse sua localização para mapear trilhas.",
           "isAndroidForegroundServiceEnabled": true
         }
       ],
       "expo-sqlite"
     ],
-    "newArchEnabled": true,
-    "typedRoutes": true,
+    "experiments": {
+      "typedRoutes": true
+    },
     "extra": {
       "googleDirectionsApiKey": "SET_VIA_EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY",
       "firebaseFunctionsRegion": "us-central1",
@@ -81,9 +78,9 @@
       },
       "router": {},
       "eas": {
-        "projectId": "d87eecde-1ab9-4f44-90fc-14606cdd6c06"
+        "projectId": "fd2b1ca7-5abb-4ae3-88e6-a82f822dd0c0"
       }
     },
-    "owner": "brunonunes01"
+    "owner": "brunonuness"
   }
 }

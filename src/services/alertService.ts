@@ -7,14 +7,15 @@ import {
   push,
   query,
   ref,
-  remove,
-  runTransaction,
   set,
+  runTransaction,
   update,
 } from "firebase/database";
 import { User } from "firebase/auth";
 import { database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 import {
+  AlertCategory,
+  AlertLifecycleStatus,
   AlertReport,
   AlertReportReason,
   AlertStatus,
@@ -26,6 +27,7 @@ import { loadOfflineCache, saveOfflineCache } from "../storage/offlineCache";
 
 type CreateAlertInput = {
   type: AlertType;
+  category?: AlertCategory;
   description: string;
   latitude: number;
   longitude: number;
@@ -42,7 +44,11 @@ type SubscribeAlertOptions = {
 };
 
 const ALERT_TTL_MS = 6 * 60 * 60 * 1000;
+const ALERT_PERSISTENT_PLACEHOLDER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTO_REVIEW_REPORT_THRESHOLD = 5;
+const NOT_FOUND_AUTO_ARCHIVE_THRESHOLD = 5;
+const FEEDBACK_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+const RECENT_CONFIRM_WINDOW_MS = 72 * 60 * 60 * 1000;
 const alertsRef = ref(database, "alerts");
 const attemptedExpireSync = new Set<string>();
 const OFFLINE_CACHE_ALERTS_KEY = "alerts";
@@ -65,6 +71,16 @@ const ALERT_SEVERITY_WEIGHT: Record<AlertType, number> = {
 const isKnownStatus = (value: unknown): value is AlertStatus =>
   value === "ativo" || value === "resolvido" || value === "expirado" || value === "removido";
 
+const isKnownCategory = (value: unknown): value is AlertCategory =>
+  value === "temporario" || value === "persistente";
+
+const isKnownLifecycleStatus = (value: unknown): value is AlertLifecycleStatus =>
+  value === "pending" ||
+  value === "active" ||
+  value === "rejected" ||
+  value === "resolved" ||
+  value === "archived";
+
 const normalizeReportReason = (value: unknown): AlertReportReason => {
   if (
     value === "informacao_falsa" ||
@@ -77,7 +93,24 @@ const normalizeReportReason = (value: unknown): AlertReportReason => {
   return "informacao_falsa";
 };
 
-const getExpiresAtMsFromRaw = (raw: any, createdAtMs: number): number => {
+const inferCategoryFromType = (type: AlertType): AlertCategory => {
+  if (
+    type === "trilha_bloqueada" ||
+    type === "queda_arvore" ||
+    type === "lama" ||
+    type === "pista_escorregadia"
+  ) {
+    return "persistente";
+  }
+  return "temporario";
+};
+
+const resolveCategory = (rawCategory: unknown, type: AlertType): AlertCategory => {
+  if (isKnownCategory(rawCategory)) return rawCategory;
+  return inferCategoryFromType(type);
+};
+
+const getExpiresAtMsFromRaw = (raw: any, createdAtMs: number, category: AlertCategory): number => {
   if (typeof raw?.expiresAtMs === "number" && Number.isFinite(raw.expiresAtMs)) {
     return raw.expiresAtMs;
   }
@@ -89,10 +122,15 @@ const getExpiresAtMsFromRaw = (raw: any, createdAtMs: number): number => {
     }
   }
 
+  if (category === "persistente") {
+    return createdAtMs + ALERT_PERSISTENT_PLACEHOLDER_TTL_MS;
+  }
+
   return createdAtMs + ALERT_TTL_MS;
 };
 
 const resolveStatus = (
+  category: AlertCategory,
   rawStatus: unknown,
   expiresAtMs: number,
   now: number
@@ -101,7 +139,7 @@ const resolveStatus = (
   if (rawStatus === "resolvido") return { status: "resolvido", shouldPersistExpiration: false };
   if (rawStatus === "expirado") return { status: "expirado", shouldPersistExpiration: false };
 
-  const expiredByTime = now >= expiresAtMs;
+  const expiredByTime = category === "temporario" && now >= expiresAtMs;
   if (expiredByTime) {
     return {
       status: "expirado",
@@ -110,6 +148,22 @@ const resolveStatus = (
   }
 
   return { status: "ativo", shouldPersistExpiration: false };
+};
+
+const resolveLifecycleStatus = (
+  rawLifecycleStatus: unknown,
+  status: AlertStatus,
+  moderationStatus: unknown
+): AlertLifecycleStatus => {
+  if (isKnownLifecycleStatus(rawLifecycleStatus)) {
+    return rawLifecycleStatus;
+  }
+
+  if (status === "resolvido") return "resolved";
+  if (status === "removido") return "rejected";
+  if (status === "expirado") return "archived";
+  if (moderationStatus === "review_pending") return "pending";
+  return "active";
 };
 
 const normalizeReports = (rawReports: any): Record<string, AlertReport> => {
@@ -160,20 +214,22 @@ const normalizeAlert = (
       ? raw.createdAtMs
       : new Date(createdAt).getTime() || Date.now();
 
-  const expiresAtMs = getExpiresAtMsFromRaw(raw, createdAtMs);
+  const type = (raw?.type || "outro") as AlertType;
+  const category = resolveCategory(raw?.category, type);
+  const expiresAtMs = getExpiresAtMsFromRaw(raw, createdAtMs, category);
   const expiresAt =
     typeof raw?.expiresAt === "string" && new Date(raw.expiresAt).getTime() > 0
       ? raw.expiresAt
       : new Date(expiresAtMs).toISOString();
 
-  const { status, shouldPersistExpiration } = resolveStatus(raw?.status, expiresAtMs, now);
+  const { status, shouldPersistExpiration } = resolveStatus(category, raw?.status, expiresAtMs, now);
   const reports = normalizeReports(raw?.reports);
 
   const reportCount =
     typeof raw?.reportCount === "number" && raw.reportCount >= 0
       ? Math.floor(raw.reportCount)
       : Object.keys(reports).length;
-  const type = (raw?.type || "outro") as AlertType;
+  const lifecycleStatus = resolveLifecycleStatus(raw?.lifecycleStatus, status, raw?.moderationStatus);
   const ageHours = Math.max(0, (now - createdAtMs) / (60 * 60 * 1000));
   const recencyScore = Math.max(0.2, 1 - Math.min(ageHours, 24) / 28);
   const communitySignal = Math.max(
@@ -193,6 +249,7 @@ const normalizeAlert = (
     alert: {
       id,
       type,
+      category,
       description: String(raw?.description || "Sem descrição."),
       latitude,
       longitude,
@@ -223,12 +280,24 @@ const normalizeAlert = (
         typeof raw?.reviewRequestedAt === "string" ? raw.reviewRequestedAt : null,
       reviewRequestedBy:
         typeof raw?.reviewRequestedBy === "string" ? raw.reviewRequestedBy : null,
+      lifecycleStatus,
+      archivedAt: typeof raw?.archivedAt === "string" ? raw.archivedAt : null,
+      expiredAt: typeof raw?.expiredAt === "string" ? raw.expiredAt : null,
+      lastConfirmedAt: typeof raw?.lastConfirmedAt === "string" ? raw.lastConfirmedAt : null,
+      notFoundCount:
+        typeof raw?.notFoundCount === "number" && raw.notFoundCount > 0
+          ? Math.floor(raw.notFoundCount)
+          : 0,
+      feedbackByUser:
+        raw?.feedbackByUser && typeof raw.feedbackByUser === "object"
+          ? raw.feedbackByUser
+          : {},
     },
   };
 };
 
 const shouldIncludeAlert = (alert: TrailAlert, options?: SubscribeAlertOptions): boolean => {
-  const includeResolved = options?.includeResolved ?? true;
+  const includeResolved = options?.includeResolved ?? false;
   if (alert.status === "removido" && !options?.includeRemoved) {
     return false;
   }
@@ -307,6 +376,8 @@ const syncExpiredAlertsInBackground = (toExpireIds: string[]) => {
     update(ref(database, `alerts/${alertId}`), {
       status: "expirado",
       expiredAt: new Date().toISOString(),
+      lifecycleStatus: "archived",
+      archivedAt: new Date().toISOString(),
     }).catch(() => {
       attemptedExpireSync.delete(alertId);
     });
@@ -395,7 +466,7 @@ export const subscribeRouteAlerts = (
       onChange(alerts.filter((alert) => alert.routeId === routeId));
     },
     onError,
-    { includeResolved: true }
+    { includeResolved: false }
   );
 
 export const subscribeAllAlertsForAdmin = (
@@ -425,6 +496,7 @@ export const createAlert = async (input: CreateAlertInput, user: User | null) =>
     input.status === "resolvido" || input.status === "expirado" || input.status === "removido"
       ? input.status
       : "ativo";
+  const category = resolveCategory(input.category, input.type);
 
   try {
     const duplicate = await hasRecentDuplicate(user.uid, input);
@@ -436,10 +508,22 @@ export const createAlert = async (input: CreateAlertInput, user: User | null) =>
 
     const createdAt = new Date().toISOString();
     const createdAtMs = Date.now();
-    const expiresAtMs = createdAtMs + ALERT_TTL_MS;
+    const expiresAtMs =
+      category === "persistente"
+        ? createdAtMs + ALERT_PERSISTENT_PLACEHOLDER_TTL_MS
+        : createdAtMs + ALERT_TTL_MS;
+    const lifecycleStatus: AlertLifecycleStatus =
+      safeStatus === "resolvido"
+        ? "resolved"
+        : safeStatus === "removido"
+          ? "rejected"
+          : safeStatus === "expirado"
+            ? "archived"
+            : "active";
 
     const alertPayload = {
       type: input.type,
+      category,
       description: input.description.trim(),
       latitude: input.latitude,
       longitude: input.longitude,
@@ -463,6 +547,12 @@ export const createAlert = async (input: CreateAlertInput, user: User | null) =>
       moderationStatus: "none",
       reviewRequestedAt: null,
       reviewRequestedBy: null,
+      lifecycleStatus,
+      archivedAt: lifecycleStatus === "archived" || lifecycleStatus === "rejected" ? createdAt : null,
+      expiredAt: safeStatus === "expirado" ? createdAt : null,
+      lastConfirmedAt: null,
+      notFoundCount: 0,
+      feedbackByUser: {},
     };
 
     const newAlertRef = push(alertsRef);
@@ -479,16 +569,121 @@ export const createAlert = async (input: CreateAlertInput, user: User | null) =>
   }
 };
 
-export const confirmAlert = async (alertId: string) => {
-  const confirmationsRef = ref(database, `alerts/${alertId}/confirmations`);
+type AlertFeedbackKind = "confirm" | "not_found";
 
+const getFeedbackCount = (rawValue: unknown): number => {
+  const parsed = Number(rawValue || 0);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed);
+};
+
+const applyAlertFeedback = async (
+  alertId: string,
+  kind: AlertFeedbackKind,
+  user: User | null
+) => {
+  if (!user) {
+    throw new Error("Você precisa estar logado para enviar feedback.");
+  }
+
+  const alertRef = ref(database, `alerts/${alertId}`);
+  const snapshot = await get(alertRef);
+  if (!snapshot.exists()) {
+    throw new Error("Alerta não encontrado.");
+  }
+
+  const rawAlert = snapshot.val() || {};
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const previousFeedback = rawAlert?.feedbackByUser?.[user.uid];
+  const previousAtMs =
+    typeof previousFeedback?.createdAtMs === "number"
+      ? previousFeedback.createdAtMs
+      : new Date(previousFeedback?.createdAt || 0).getTime();
+
+  if (Number.isFinite(previousAtMs) && now - previousAtMs < FEEDBACK_COOLDOWN_MS) {
+    const remainingMs = FEEDBACK_COOLDOWN_MS - (now - previousAtMs);
+    const remainingHours = Math.ceil(remainingMs / (60 * 60 * 1000));
+    throw new Error(`Aguarde ${remainingHours}h para enviar novo feedback neste alerta.`);
+  }
+
+  const type = (rawAlert?.type || "outro") as AlertType;
+  const category = resolveCategory(rawAlert?.category, type);
+  const nextConfirmations =
+    kind === "confirm" ? getFeedbackCount(rawAlert?.confirmations) + 1 : undefined;
+  const nextNotFoundCount =
+    kind === "not_found" ? getFeedbackCount(rawAlert?.notFoundCount) + 1 : undefined;
+  const lastConfirmedAtMs =
+    typeof rawAlert?.lastConfirmedAt === "string"
+      ? new Date(rawAlert.lastConfirmedAt).getTime()
+      : Number.NaN;
+  const hasRecentConfirm =
+    Number.isFinite(lastConfirmedAtMs) && now - lastConfirmedAtMs <= RECENT_CONFIRM_WINDOW_MS;
+  const shouldAutoResolvePersistent =
+    category === "persistente" &&
+    kind === "not_found" &&
+    (nextNotFoundCount || 0) >= NOT_FOUND_AUTO_ARCHIVE_THRESHOLD &&
+    !hasRecentConfirm;
+
+  const payload: Record<string, unknown> = {
+    [`feedbackByUser/${user.uid}`]: {
+      kind,
+      createdAt: nowIso,
+      createdAtMs: now,
+      userId: user.uid,
+      userDisplayName: user.displayName || null,
+      userEmail: user.email || null,
+    },
+  };
+
+  if (kind === "confirm") {
+    payload.confirmations = nextConfirmations;
+    payload.lastConfirmedAt = nowIso;
+    payload.lifecycleStatus = "active";
+    if (rawAlert?.status !== "resolvido" && rawAlert?.status !== "removido") {
+      payload.status = "ativo";
+      payload.archivedAt = null;
+    }
+  }
+
+  if (kind === "not_found") {
+    payload.notFoundCount = nextNotFoundCount;
+  }
+
+  if (shouldAutoResolvePersistent) {
+    payload.status = "resolvido";
+    payload.lifecycleStatus = "resolved";
+    payload.resolvedAt = nowIso;
+    payload.archivedAt = nowIso;
+  }
+
+  await update(alertRef, payload);
+};
+
+export const confirmAlert = async (alertId: string, user?: User | null) => {
   try {
+    if (user) {
+      await applyAlertFeedback(alertId, "confirm", user);
+      return;
+    }
+
+    const confirmationsRef = ref(database, `alerts/${alertId}/confirmations`);
     await runTransaction(confirmationsRef, (current) => {
       const value = typeof current === "number" ? current : 0;
       return value + 1;
     });
   } catch (error) {
     throw new Error(normalizeFirebaseErrorMessage(error, "Não foi possível confirmar o alerta."));
+  }
+};
+
+export const markAlertAsNotFound = async (alertId: string, user: User | null) => {
+  try {
+    await applyAlertFeedback(alertId, "not_found", user);
+  } catch (error) {
+    throw new Error(
+      normalizeFirebaseErrorMessage(error, "Não foi possível registrar esse feedback.")
+    );
   }
 };
 
@@ -517,8 +712,14 @@ export const reportAlert = async (
     }
 
     const now = Date.now();
-    const expiresAtMs = getExpiresAtMsFromRaw(rawAlert, now);
-    const derived = resolveStatus(rawAlert?.status, expiresAtMs, now);
+    const type = (rawAlert?.type || "outro") as AlertType;
+    const category = resolveCategory(rawAlert?.category, type);
+    const createdAtMs =
+      typeof rawAlert?.createdAtMs === "number"
+        ? rawAlert.createdAtMs
+        : new Date(rawAlert?.createdAt || 0).getTime() || now;
+    const expiresAtMs = getExpiresAtMsFromRaw(rawAlert, createdAtMs, category);
+    const derived = resolveStatus(category, rawAlert?.status, expiresAtMs, now);
     if (derived.status === "removido") {
       throw new Error("Este alerta já foi removido pela moderação.");
     }
@@ -565,6 +766,8 @@ export const markAlertAsResolved = async (alertId: string) => {
     await update(alertRef, {
       status: "resolvido",
       resolvedAt: new Date().toISOString(),
+      lifecycleStatus: "resolved",
+      archivedAt: new Date().toISOString(),
     });
   } catch (error) {
     throw new Error(
@@ -575,11 +778,16 @@ export const markAlertAsResolved = async (alertId: string) => {
 
 export const removeAlertByAdmin = async (alertId: string, adminUserId?: string | null) => {
   const alertRef = ref(database, `alerts/${alertId}`);
-  void adminUserId;
 
   try {
-    // Exclui o alerta de forma definitiva para não voltar na moderação.
-    await remove(alertRef);
+    await update(alertRef, {
+      status: "removido",
+      lifecycleStatus: "rejected",
+      removedAt: new Date().toISOString(),
+      removedBy: adminUserId || null,
+      archivedAt: new Date().toISOString(),
+      moderationStatus: "reviewed",
+    });
   } catch (error) {
     throw new Error(
       normalizeFirebaseErrorMessage(error, "Não foi possível remover o alerta.")
@@ -593,10 +801,24 @@ export const updateAlertStatus = async (alertId: string, status: AlertStatus) =>
   const payload: Record<string, unknown> = { status };
   if (status === "resolvido") {
     payload.resolvedAt = new Date().toISOString();
+    payload.lifecycleStatus = "resolved";
+    payload.archivedAt = new Date().toISOString();
   }
 
   if (status === "removido") {
     payload.removedAt = new Date().toISOString();
+    payload.lifecycleStatus = "rejected";
+    payload.archivedAt = new Date().toISOString();
+  }
+
+  if (status === "expirado") {
+    payload.expiredAt = new Date().toISOString();
+    payload.lifecycleStatus = "archived";
+    payload.archivedAt = new Date().toISOString();
+  }
+
+  if (status === "ativo") {
+    payload.lifecycleStatus = "active";
   }
 
   try {

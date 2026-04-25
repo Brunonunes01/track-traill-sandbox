@@ -63,6 +63,7 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
   const route = props.route || hookRoute;
   const insets = useSafeAreaInsets();
   const sessionFromParams = route.params?.session as ActiveActivitySession | undefined;
+  const contentBottomPadding = Math.max(insets.bottom + 56, 88);
 
   const [session, setSession] = useState<ActiveActivitySession | null>(sessionFromParams || null);
   const [loading, setLoading] = useState(!sessionFromParams);
@@ -151,13 +152,26 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
   const [focusedChartPoint, setFocusedChartPoint] = useState<ChartPoint | null>(null);
 
   const handleDiscard = async () => {
-    try {
-      await discardActiveSession();
-      navigation.navigate("MainTabs", { screen: "Home" });
-    } catch (error: any) {
-      console.warn("[activity-summary] handleDiscard failed:", error?.message || String(error));
-      Alert.alert("Erro", "Não foi possível descartar a atividade agora.");
-    }
+    Alert.alert(
+      "Descartar atividade?",
+      "Essa ação remove a atividade atual e não pode ser desfeita.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Descartar",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await discardActiveSession();
+              navigation.navigate("MainTabs", { screen: "Home" });
+            } catch (error: any) {
+              console.warn("[activity-summary] handleDiscard failed:", error?.message || String(error));
+              Alert.alert("Erro", "Não foi possível descartar a atividade agora.");
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleSaveRoute = async () => {
@@ -221,7 +235,7 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
             ? "Sua atividade foi compartilhada com seus amigos."
             : "Sua atividade foi salva como privada e só você consegue ver."
       );
-      navigation.navigate("Ajuda");
+      navigation.navigate("Community");
     } catch (error: any) {
       Alert.alert("Não foi possível compartilhar", error?.message || "Tente novamente.");
     } finally {
@@ -271,7 +285,7 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
             ? "Sua atividade foi compartilhada com seus amigos."
             : "Sua atividade foi salva como privada."
       );
-      navigation.navigate("Ajuda");
+      navigation.navigate("Community");
     } catch (error: any) {
       Alert.alert("Não foi possível concluir", error?.message || "Tente novamente.");
     } finally {
@@ -362,7 +376,10 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: contentBottomPadding }]}
+        showsVerticalScrollIndicator={false}
+      >
         <Text style={styles.title}>Resumo da atividade</Text>
 
         <View style={styles.metricsRow}>

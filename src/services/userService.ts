@@ -1,4 +1,5 @@
 import { get, onValue, ref, runTransaction, set, update } from "firebase/database";
+import { updateProfile as updateAuthProfile } from "firebase/auth";
 import { auth, database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 
 type EnsureProfileInput = {
@@ -21,6 +22,21 @@ type UpdateProfileInput = {
   uid: string;
   fullName: string;
   username: string;
+};
+
+export const hasRegisteredUserProfile = async (uid: string): Promise<boolean> => {
+  const normalizedUid = String(uid || "").trim();
+  if (!normalizedUid) return false;
+
+  const snapshot = await get(ref(database, `users/${normalizedUid}`));
+  if (!snapshot.exists()) return false;
+
+  const data = snapshot.val() || {};
+  return Boolean(
+    String(data.fullName || "").trim() &&
+      String(data.username || "").trim() &&
+      String(data.email || "").trim()
+  );
 };
 
 export const normalizeUsername = (value: string) =>
@@ -333,6 +349,14 @@ export const updatePublicProfile = async (input: UpdateProfileInput) => {
       username: newUsername,
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  try {
+    if (auth.currentUser?.uid === input.uid) {
+      await updateAuthProfile(auth.currentUser, { displayName: input.fullName.trim() });
+    }
+  } catch (error) {
+    console.warn("[profile] failed to sync auth displayName:", error);
   }
 
   return {

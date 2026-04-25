@@ -18,6 +18,7 @@ import {
   View
 } from 'react-native';
 import MapView, { MapPressEvent, Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { auth, database } from '../../services/connectionFirebase';
 import {
   fetchGoogleDirections,
@@ -34,6 +35,7 @@ export default function SuggestRouteScreen() {
   const isFocused = useIsFocused(); // Destrói o mapa quando não está na tela
 
   const navigation = useNavigation<any>();
+  const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
   const dragRecalcTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -207,10 +209,12 @@ export default function SuggestRouteScreen() {
 
     setIsCalculating(true);
     try {
+      const shouldUseGoogleEngine = provedorRota === "google" || terreno === "Asfalto";
       const result = await fetchRoundTripByDistance({
         origin,
         targetDistanceKm: goal,
         profile: getProfileFromProvider(),
+        engine: shouldUseGoogleEngine ? "google" : "graphhopper",
         alternatives: 3,
       });
 
@@ -223,7 +227,6 @@ export default function SuggestRouteScreen() {
       setTempoCalculado(result.best.durationText);
       setDuracaoSegundos(result.best.durationSeconds);
       setUnpavedRatio(result.best.unpavedRatio ?? null);
-      setTerreno("Terra");
     } catch (error: any) {
       console.error("[RoundTrip] Erro ao gerar rota por meta:", error?.message || String(error));
       const message = String(error?.message || "");
@@ -531,7 +534,7 @@ export default function SuggestRouteScreen() {
       ) : null}
 
       {(isGoalMode ? routeCoordinates.length > 1 : startPoint && endPoint) && !isFormVisible ? (
-        <View style={styles.confirmBox}>
+        <View style={[styles.confirmBox, { bottom: Math.max(insets.bottom + 26, 40) }]}>
           <TouchableOpacity style={styles.confirmBtn} onPress={() => setIsFormVisible(true)}>
             <Ionicons name="checkmark-circle-outline" size={20} color="#000" />
             <Text style={styles.confirmBtnText}>Confirmar pontos e abrir cadastro</Text>
@@ -544,7 +547,10 @@ export default function SuggestRouteScreen() {
           <ImageBackground source={require('../../assets/images/Azulao.png')} style={styles.sheetBg} imageStyle={{ borderTopLeftRadius: 30, borderTopRightRadius: 30 }}>
             <LinearGradient colors={['rgba(0,0,0,0.85)', 'rgba(0,0,0,0.98)']} style={styles.sheetOverlay}>
               <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom + 72, 96) }]}
+                >
                   <View style={styles.dragIndicator} />
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
                       <Text style={styles.sheetTitle}>Detalhes da Rota</Text>

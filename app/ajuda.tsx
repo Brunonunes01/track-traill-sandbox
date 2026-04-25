@@ -1,8 +1,8 @@
 import React from "react";
-import CommunityScreen from "../src/screens/CommunityScreen";
+import AjudaScreen from "../src/screens/AjudaScreen";
 import { useExpoNavigationBridge } from "../src/navigation/useExpoNavigationBridge";
 
 export default function AjudaRoute() {
   const navigation = useExpoNavigationBridge();
-  return <CommunityScreen navigation={navigation} />;
+  return <AjudaScreen navigation={navigation} />;
 }

@@ -16,7 +16,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
 import AlertCard from "../components/AlertCard";
 import { ALERT_REPORT_REASONS, ALERT_TYPE_META, TrailAlert } from "../models/alerts";
-import { confirmAlert, markAlertAsResolved, reportAlert, subscribeAlerts } from "../services/alertService";
+import {
+  confirmAlert,
+  markAlertAsNotFound,
+  markAlertAsResolved,
+  reportAlert,
+  subscribeAlerts,
+} from "../services/alertService";
 import { toCoordinate } from "../utils/geo";
 
 type AlertDetailParams = {
@@ -79,10 +85,28 @@ export default function AlertDetailScreen(props: AlertDetailScreenProps) {
 
     try {
       setSubmitting(true);
-      await confirmAlert(alertItem.id);
+      await confirmAlert(alertItem.id, auth.currentUser);
       Alert.alert("Confirmado", "Você confirmou este alerta.");
     } catch {
       Alert.alert("Erro", "Não foi possível confirmar este alerta.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleNotFound = async () => {
+    if (!alertItem) return;
+    if (!auth.currentUser) {
+      Alert.alert("Login necessário", "Entre na conta para enviar esse feedback.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      await markAlertAsNotFound(alertItem.id, auth.currentUser);
+      Alert.alert("Feedback enviado", "Obrigado por informar que você não encontrou esse alerta.");
+    } catch (error: any) {
+      Alert.alert("Erro", error?.message || "Não foi possível registrar o feedback.");
     } finally {
       setSubmitting(false);
     }
@@ -200,8 +224,17 @@ export default function AlertDetailScreen(props: AlertDetailScreenProps) {
         <View style={styles.metaCard}>
           <Text style={styles.metaTitle}>Informações</Text>
           <Text style={styles.metaText}>Tipo: {meta.label}</Text>
+          <Text style={styles.metaText}>Categoria: {alertItem.category}</Text>
           <Text style={styles.metaText}>Status: {alertItem.status}</Text>
-          <Text style={styles.metaText}>Expira em: {new Date(alertItem.expiresAt).toLocaleString("pt-BR")}</Text>
+          <Text style={styles.metaText}>
+            Expiração:{" "}
+            {alertItem.category === "persistente"
+              ? "Sem expiração automática"
+              : new Date(alertItem.expiresAt).toLocaleString("pt-BR")}
+          </Text>
+          <Text style={styles.metaText}>
+            Ciclo: {alertItem.lifecycleStatus || "active"} | Não encontrado: {alertItem.notFoundCount || 0}
+          </Text>
           <Text style={styles.metaText}>Rota: {alertItem.routeName || "Não vinculada"}</Text>
           <Text style={styles.metaText}>
             Autor: {alertItem.userDisplayName || alertItem.userEmail || "Usuário"}
@@ -234,6 +267,11 @@ export default function AlertDetailScreen(props: AlertDetailScreenProps) {
               <Text style={styles.primaryBtnText}>Confirmar alerta</Text>
             </>
           )}
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.secondaryBtn} onPress={handleNotFound} disabled={submitting}>
+          <Ionicons name="eye-off-outline" size={18} color="#d1d5db" />
+          <Text style={styles.secondaryBtnText}>Não encontrei no local</Text>
         </TouchableOpacity>
 
         {canResolve && alertItem.status !== "resolvido" ? (

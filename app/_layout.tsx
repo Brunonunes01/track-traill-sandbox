@@ -17,6 +17,9 @@ import { subscribeCurrentUserRole } from "../services/adminService";
 import { auth, database, isRealtimeDatabaseConfigured } from "../services/connectionFirebase";
 import { getPendingSyncCount, processSyncQueue } from "../src/services/activityTrackingService";
 
+// Impede que a tela de splash suma automaticamente antes do app estar pronto
+SplashScreen.preventAutoHideAsync().catch(() => {});
+
 function CustomDrawerContent(props: any) {
   const { navigation } = props;
   const router = useRouter();
@@ -46,7 +49,7 @@ function CustomDrawerContent(props: any) {
   return (
     <View style={[styles.drawerContainer, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16 }]}>
       <View style={styles.drawerHeader}>
-        <Text style={styles.drawerTitle}>Track & Trail</Text>
+        <Text style={styles.drawerTitle}>Track-Traill</Text>
         <Text style={styles.drawerSubtitle}>Explore novos caminhos</Text>
       </View>
 
@@ -132,8 +135,10 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-    // Esconde o splash imediatamente para boot rápido
-    SplashScreen.hideAsync().catch(() => {});
+    if (loaded) {
+      // Esconde o splash apenas quando o app está pronto
+      SplashScreen.hideAsync().catch(() => {});
+    }
 
     syncQueueNow().catch(() => {});
     refreshPendingCount().catch(() => {});
@@ -149,7 +154,7 @@ export default function RootLayout() {
 
       configureAndroidNavBar();
     }
-  }, [refreshPendingCount, syncQueueNow]);
+  }, [loaded, refreshPendingCount, syncQueueNow]);
 
   useEffect(() => {
     if (!isRealtimeDatabaseConfigured) {

@@ -5,6 +5,7 @@ import * as Location from "expo-location";
 import { onValue, ref } from "firebase/database";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
+import { onAuthStateChanged } from "firebase/auth";
 import {
   ActivityIndicator,
   Animated,
@@ -64,23 +65,38 @@ export default function SimpleHomeScreen({ navigation }: any) {
   const sectionAnims = useRef(Array.from({ length: 6 }, () => new Animated.Value(0))).current;
 
   useEffect(() => {
-    const user = auth.currentUser;
+    let unsubscribeUser: (() => void) | null = null;
     const safetyTimeout = setTimeout(() => {
       setLoading(false);
     }, 8000);
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (unsubscribeUser) {
+        unsubscribeUser();
+        unsubscribeUser = null;
+      }
 
-    if (!user) {
-      setLoading(false);
-      clearTimeout(safetyTimeout);
-      return;
-    }
+      if (!user) {
+        setFullName("Explorador");
+        setActivitiesCount(0);
+        setLocationLabel("Localização não informada");
+        setLoading(false);
+        clearTimeout(safetyTimeout);
+        return;
+      }
 
-    const userRef = ref(database, `users/${user.uid}`);
-    const unsubscribeUser = onValue(userRef, (snapshot) => {
-      const data = snapshot.val() || {};
-      setFullName(data.fullName || data.username || user.email || "Explorador");
-      setActivitiesCount(data.atividades ? Object.keys(data.atividades).length : 0);
-      setLocationLabel(data.city || data.cidade || data.location || "Localização não informada");
+      const userRef = ref(database, `users/${user.uid}`);
+      unsubscribeUser = onValue(userRef, (snapshot) => {
+        const data = snapshot.val() || {};
+        const emailPrefix = (user.email || "").split("@")[0];
+        const displayName =
+          (data.fullName || data.nome || data.name || data.username || emailPrefix || "Explorador")
+            .toString()
+            .trim() || "Explorador";
+
+        setFullName(displayName);
+        setActivitiesCount(data.atividades ? Object.keys(data.atividades).length : 0);
+        setLocationLabel(data.city || data.cidade || data.location || "Localização não informada");
+      });
     });
 
     const unsubscribeRoutes = subscribeOfficialRoutes((routes) => {
@@ -95,7 +111,8 @@ export default function SimpleHomeScreen({ navigation }: any) {
 
     return () => {
       clearTimeout(safetyTimeout);
-      unsubscribeUser();
+      if (unsubscribeUser) unsubscribeUser();
+      unsubscribeAuth();
       unsubscribeRoutes();
       unsubscribeAlerts();
     };

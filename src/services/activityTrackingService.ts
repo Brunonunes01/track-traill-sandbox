@@ -1,7 +1,7 @@
 import * as Location from "expo-location";
 import * as SQLite from "expo-sqlite";
 import * as TaskManager from "expo-task-manager";
-import { push, ref, set } from "firebase/database";
+import { get, push, ref, set } from "firebase/database";
 import { auth, database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 import {
   ActiveActivitySession,
@@ -52,12 +52,20 @@ const MIN_POINT_DISTANCE_METERS = 4;
 const MAX_GPS_JUMP_METERS = 250;
 const ELEVATION_NOISE_THRESHOLD_METERS = 1.5;
 const AUTO_PAUSE_IDLE_MS = 5000;
+const MAX_SYNC_ATTEMPTS = 7;
+
+const MAX_GPS_JUMP_METERS_BY_ACTIVITY: Record<ActivityType, number> = {
+  caminhada: 90,
+  corrida: 140,
+  trilha: 120,
+  bike: 260,
+};
 
 const MAX_REASONABLE_SPEED_MPS_BY_ACTIVITY: Record<ActivityType, number> = {
-  caminhada: 3.5,
-  corrida: 10,
-  trilha: 7,
-  bike: 30,
+  caminhada: 2.8,
+  corrida: 7.5,
+  trilha: 5.5,
+  bike: 22,
 };
 
 const AUTO_PAUSE_THRESHOLD_KMH_BY_ACTIVITY: Record<ActivityType, number> = {
@@ -86,6 +94,7 @@ const getTrackingDb = async () => {
           latitude REAL NOT NULL,
           longitude REAL NOT NULL,
           altitude REAL,
+          accuracy REAL,
           timestamp INTEGER NOT NULL,
           PRIMARY KEY (session_id, seq)
         );
@@ -94,6 +103,8 @@ const getTrackingDb = async () => {
           payload TEXT NOT NULL,
           status TEXT DEFAULT 'pending',
           attempts INTEGER DEFAULT 0,
+          next_retry_at INTEGER DEFAULT 0,
+          last_error TEXT,
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_tracking_points_session_seq
@@ -102,6 +113,24 @@ const getTrackingDb = async () => {
 
       try {
         await db.execAsync("ALTER TABLE tracking_points ADD COLUMN altitude REAL;");
+      } catch {
+        // Coluna já existe.
+      }
+
+      try {
+        await db.execAsync("ALTER TABLE tracking_points ADD COLUMN accuracy REAL;");
+      } catch {
+        // Coluna já existe.
+      }
+
+      try {
+        await db.execAsync("ALTER TABLE sync_queue ADD COLUMN next_retry_at INTEGER DEFAULT 0;");
+      } catch {
+        // Coluna já existe.
+      }
+
+      try {
+        await db.execAsync("ALTER TABLE sync_queue ADD COLUMN last_error TEXT;");
       } catch {
         // Coluna já existe.
       }
@@ -115,6 +144,10 @@ const getTrackingDb = async () => {
 
 const resolveMaxReasonableSpeedMps = (activityType: ActivityType) => {
   return MAX_REASONABLE_SPEED_MPS_BY_ACTIVITY[activityType] || 10;
+};
+
+const resolveMaxJumpMeters = (activityType: ActivityType) => {
+  return MAX_GPS_JUMP_METERS_BY_ACTIVITY[activityType] || MAX_GPS_JUMP_METERS;
 };
 
 const buildDefaultSessionMeta = (
@@ -212,21 +245,53 @@ const isInvalidGpsJump = (
   segmentMeters: number,
   activityType: ActivityType
 ): boolean => {
-  if (segmentMeters <= MAX_GPS_JUMP_METERS) {
-    return false;
-  }
-
+  const maxJumpMeters = resolveMaxJumpMeters(activityType);
   const elapsedMs = current.timestamp - previous.timestamp;
   if (elapsedMs <= 0) {
     return true;
   }
 
-  const speedMps = segmentMeters / (elapsedMs / 1000);
-  return speedMps > resolveMaxReasonableSpeedMps(activityType);
+  if (segmentMeters <= MIN_POINT_DISTANCE_METERS) {
+    return false;
+  }
+
+  const elapsedSec = elapsedMs / 1000;
+  const speedMps = segmentMeters / elapsedSec;
+  const maxReasonableSpeedMps = resolveMaxReasonableSpeedMps(activityType);
+
+  // Ponto com baixa precisão e salto relevante tende a ser ruído. Tornamos o descarte mais agressivo.
+  const poorAccuracy =
+    (typeof current.accuracy === "number" && current.accuracy > 65) ||
+    (typeof previous.accuracy === "number" && previous.accuracy > 65);
+  if (poorAccuracy && segmentMeters >= 40) {
+    return true;
+  }
+
+  // Em janelas curtas, um salto acima desse limite é quase sempre glitch de GPS.
+  if (elapsedSec <= 12 && segmentMeters > maxJumpMeters) {
+    return true;
+  }
+
+  // Mesmo em janelas maiores, velocidade acima do limite físico do esporte é inválida.
+  if (speedMps > maxReasonableSpeedMps) {
+    return true;
+  }
+
+  // Fallback global para saltos muito extremos.
+  if (segmentMeters > MAX_GPS_JUMP_METERS * 2 && elapsedSec <= 20) {
+    return true;
+  }
+
+  return false;
 };
 
 const normalizeAltitude = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+};
+
+const normalizeAccuracy = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
   return null;
 };
 
@@ -245,6 +310,7 @@ const toActivityPoint = (value: any, fallbackTimestamp = Date.now()): ActivityPo
     latitude: coordinate.latitude,
     longitude: coordinate.longitude,
     altitude: normalizeAltitude(value?.altitude),
+    accuracy: normalizeAccuracy(value?.accuracy),
     timestamp,
   };
 };
@@ -325,9 +391,10 @@ const loadSessionPoints = async (sessionId: string): Promise<ActivityPoint[]> =>
     latitude: number;
     longitude: number;
     altitude: number | null;
+    accuracy: number | null;
     timestamp: number;
   }>(
-    "SELECT latitude, longitude, altitude, timestamp FROM tracking_points WHERE session_id = ? ORDER BY seq ASC",
+    "SELECT latitude, longitude, altitude, accuracy, timestamp FROM tracking_points WHERE session_id = ? ORDER BY seq ASC",
     sessionId
   );
 
@@ -335,27 +402,35 @@ const loadSessionPoints = async (sessionId: string): Promise<ActivityPoint[]> =>
     latitude: Number(row.latitude),
     longitude: Number(row.longitude),
     altitude: typeof row.altitude === "number" ? Number(row.altitude) : null,
+    accuracy: typeof row.accuracy === "number" ? Number(row.accuracy) : null,
     timestamp: Number(row.timestamp),
   }));
 };
 
-const appendSessionPoint = async (sessionId: string, point: ActivityPoint) => {
+const appendSessionPointsBatch = async (sessionId: string, points: ActivityPoint[]) => {
+  if (!points.length) return;
   const db = await getTrackingDb();
   const row = await db.getFirstAsync<{ nextSeq: number }>(
     "SELECT COALESCE(MAX(seq) + 1, 0) AS nextSeq FROM tracking_points WHERE session_id = ?",
     sessionId
   );
 
-  const nextSeq = Number(row?.nextSeq ?? 0);
-  await db.runAsync(
-    "INSERT INTO tracking_points(session_id, seq, latitude, longitude, altitude, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-    sessionId,
-    nextSeq,
-    point.latitude,
-    point.longitude,
-    typeof point.altitude === "number" ? point.altitude : null,
-    point.timestamp
-  );
+  let nextSeq = Number(row?.nextSeq ?? 0);
+  await db.withTransactionAsync(async () => {
+    for (const point of points) {
+      await db.runAsync(
+        "INSERT INTO tracking_points(session_id, seq, latitude, longitude, altitude, accuracy, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        sessionId,
+        nextSeq,
+        point.latitude,
+        point.longitude,
+        typeof point.altitude === "number" ? point.altitude : null,
+        typeof point.accuracy === "number" ? point.accuracy : null,
+        point.timestamp
+      );
+      nextSeq += 1;
+    }
+  });
 };
 
 const persistSessionPoints = async (sessionId: string, points: ActivityPoint[]) => {
@@ -367,12 +442,13 @@ const persistSessionPoints = async (sessionId: string, points: ActivityPoint[]) 
     for (let seq = 0; seq < points.length; seq += 1) {
       const point = points[seq];
       await db.runAsync(
-        "INSERT INTO tracking_points(session_id, seq, latitude, longitude, altitude, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tracking_points(session_id, seq, latitude, longitude, altitude, accuracy, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
         sessionId,
         seq,
         point.latitude,
         point.longitude,
         typeof point.altitude === "number" ? point.altitude : null,
+        typeof point.accuracy === "number" ? point.accuracy : null,
         point.timestamp
       );
     }
@@ -534,7 +610,7 @@ const startBackgroundTracking = async (activityType: ActivityType) => {
     activityType: Location.ActivityType.Fitness,
     showsBackgroundLocationIndicator: true,
     foregroundService: {
-      notificationTitle: "Track & Trail em atividade",
+      notificationTitle: "Track-Traill em atividade",
       notificationBody: "Gravando seu trajeto por GPS.",
       notificationColor: "#1e4db7",
     },
@@ -560,6 +636,7 @@ if (!TaskManager.isTaskDefined(TRACKING_TASK_NAME)) {
       }
 
       const updatedSession = { ...activeSession, points: [...activeSession.points] };
+      const appendedBatch: ActivityPoint[] = [];
 
       for (const location of locations) {
         const safePoint = toActivityPoint(location.coords, location.timestamp || Date.now());
@@ -567,8 +644,12 @@ if (!TaskManager.isTaskDefined(TRACKING_TASK_NAME)) {
 
         const { appended } = processIncomingPoint(updatedSession, safePoint);
         if (appended) {
-          await appendSessionPoint(updatedSession.id, safePoint);
+          appendedBatch.push(safePoint);
         }
+      }
+
+      if (appendedBatch.length > 0) {
+        await appendSessionPointsBatch(updatedSession.id, appendedBatch);
       }
 
       await saveSession(updatedSession);
@@ -582,6 +663,7 @@ export const appendForegroundPoint = async (coords: {
   latitude: number;
   longitude: number;
   altitude?: number | null;
+  accuracy?: number | null;
   timestamp?: number;
 }) => {
   const activeSession = await getActiveSession();
@@ -598,7 +680,7 @@ export const appendForegroundPoint = async (coords: {
   const { appended } = processIncomingPoint(updatedSession, safePoint);
 
   if (appended) {
-    await appendSessionPoint(updatedSession.id, safePoint);
+    await appendSessionPointsBatch(updatedSession.id, [safePoint]);
   }
 
   await saveSession(updatedSession);
@@ -934,11 +1016,103 @@ export const saveFinishedSessionAsRoute = async (
 const addToSyncQueue = async (id: string, payload: any) => {
   const db = await getTrackingDb();
   await db.runAsync(
-    "INSERT INTO sync_queue (id, payload, created_at) VALUES (?, ?, ?)",
+    `INSERT INTO sync_queue (id, payload, status, attempts, next_retry_at, last_error, created_at)
+     VALUES (?, ?, 'pending', 0, 0, NULL, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       payload = excluded.payload,
+       status = 'pending',
+       attempts = 0,
+       next_retry_at = 0,
+       last_error = NULL`,
     id,
     JSON.stringify(payload),
     Date.now()
   );
+};
+
+const computeBackoffMs = (attempt: number) => {
+  const cappedAttempt = Math.min(attempt, 8);
+  const exponentialMs = Math.min(5 * 60 * 1000, 1000 * Math.pow(2, cappedAttempt));
+  const jitterMs = Math.floor(Math.random() * 750);
+  return exponentialMs + jitterMs;
+};
+
+const toFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.trim().replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const parseDurationSeconds = (atividade: any): number => {
+  const durationSeconds = toFiniteNumber(atividade?.durationSeconds);
+  if (durationSeconds !== null) return Math.max(0, durationSeconds);
+
+  const duracao = toFiniteNumber(atividade?.duracao);
+  if (duracao !== null) return Math.max(0, duracao);
+
+  const duration = toFiniteNumber(atividade?.duration);
+  if (duration !== null) return Math.max(0, duration);
+
+  const tempoTotal = toFiniteNumber(atividade?.tempoTotal);
+  if (tempoTotal !== null) return Math.max(0, tempoTotal);
+
+  return 0;
+};
+
+const sumActivitiesStats = (activitiesData: any) => {
+  let totalKm = 0;
+  let totalDurationSeconds = 0;
+
+  if (!activitiesData || typeof activitiesData !== "object") {
+    return { totalKm, totalDurationSeconds };
+  }
+
+  Object.values(activitiesData).forEach((activity: any) => {
+    totalKm += Math.max(0, Number(activity?.distancia || 0));
+    totalDurationSeconds += parseDurationSeconds(activity);
+  });
+
+  return { totalKm, totalDurationSeconds };
+};
+
+export const adjustUserLifetimeStats = async (
+  userId: string,
+  deltaKm: number,
+  deltaDurationSeconds: number
+) => {
+  if (!userId?.trim()) return;
+
+  const userRef = ref(database, `users/${userId}`);
+  const snapshot = await get(userRef);
+  const userData = snapshot.exists() ? snapshot.val() || {} : {};
+  const lifetimeStats = userData?.lifetimeStats || {};
+
+  const currentTotalKm = toFiniteNumber(lifetimeStats?.totalKm);
+  const currentTotalDurationSeconds = toFiniteNumber(lifetimeStats?.totalDurationSeconds);
+  const hasLifetimeStats = currentTotalKm !== null && currentTotalDurationSeconds !== null;
+
+  const baseline = hasLifetimeStats
+    ? {
+        totalKm: Math.max(0, currentTotalKm || 0),
+        totalDurationSeconds: Math.max(0, currentTotalDurationSeconds || 0),
+      }
+    : sumActivitiesStats(userData?.atividades);
+
+  const nextTotalKm = Math.max(0, baseline.totalKm + (Number.isFinite(deltaKm) ? deltaKm : 0));
+  const nextTotalDurationSeconds = Math.max(
+    0,
+    baseline.totalDurationSeconds +
+      (Number.isFinite(deltaDurationSeconds) ? deltaDurationSeconds : 0)
+  );
+
+  await set(ref(database, `users/${userId}/lifetimeStats`), {
+    totalKm: Number(nextTotalKm.toFixed(2)),
+    totalDurationSeconds: Math.round(nextTotalDurationSeconds),
+    updatedAt: new Date().toISOString(),
+  });
 };
 
 export const getPendingSyncCount = async (): Promise<number> => {
@@ -983,8 +1157,18 @@ export const processSyncQueue = async () => {
 
   try {
     const db = await getTrackingDb();
-    const pending = await db.getAllAsync<{ id: string, payload: string, attempts: number }>(
-      "SELECT id, payload, attempts FROM sync_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 5"
+    const now = Date.now();
+    const pending = await db.getAllAsync<{
+      id: string;
+      payload: string;
+      attempts: number;
+      next_retry_at: number | null;
+    }>(
+      `SELECT id, payload, attempts, next_retry_at
+       FROM sync_queue
+       WHERE status = 'pending' AND COALESCE(next_retry_at, 0) <= ?
+       ORDER BY created_at ASC LIMIT 5`,
+      now
     );
 
     for (const item of pending) {
@@ -1006,20 +1190,44 @@ export const processSyncQueue = async () => {
           syncId: item.id
         });
 
-        await db.runAsync("UPDATE sync_queue SET status = 'synced' WHERE id = ?", item.id);
+        adjustUserLifetimeStats(
+          String(payload?.userId || ""),
+          Number(payload?.distancia || 0),
+          Number(payload?.duracao || 0)
+        ).catch((statsError: any) => {
+          console.warn(
+            `[sync] Falha ao atualizar lifetimeStats para ${item.id}:`,
+            statsError?.message || String(statsError)
+          );
+        });
+
+        await db.runAsync(
+          "UPDATE sync_queue SET status = 'synced', attempts = ?, next_retry_at = 0, last_error = NULL WHERE id = ?",
+          item.attempts,
+          item.id
+        );
         console.log(`[sync] Atividade ${item.id} sincronizada com sucesso.`);
       } catch (error: any) {
         const newAttempts = item.attempts + 1;
-        const newStatus = newAttempts >= 5 ? "failed" : "pending";
+        const newStatus = newAttempts >= MAX_SYNC_ATTEMPTS ? "failed" : "pending";
+        const backoffMs = computeBackoffMs(newAttempts);
+        const nextRetryAt = newStatus === "failed" ? 0 : Date.now() + backoffMs;
+        const errorMessage = error?.message || String(error);
         await db.runAsync(
-          "UPDATE sync_queue SET attempts = ?, status = ? WHERE id = ?",
+          "UPDATE sync_queue SET attempts = ?, status = ?, next_retry_at = ?, last_error = ? WHERE id = ?",
           newAttempts,
           newStatus,
+          nextRetryAt,
+          errorMessage,
           item.id
         );
         console.warn(
-          `[sync] Falha ao sincronizar ${item.id}. Tentativa ${newAttempts}:`,
-          error?.message || String(error)
+          newStatus === "failed"
+            ? `[sync] Falha permanente ao sincronizar ${item.id} após ${newAttempts} tentativas:`
+            : `[sync] Falha ao sincronizar ${item.id}. Tentativa ${newAttempts}, nova tentativa em ~${Math.round(
+                backoffMs / 1000
+              )}s:`,
+          errorMessage
         );
       }
     }

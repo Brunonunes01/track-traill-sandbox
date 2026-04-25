@@ -4,7 +4,7 @@ import { useNavigation, useRoute } from "@react-navigation/native";
 import * as Location from "expo-location";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Linking, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import MapView, { Circle, Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import Animated, { FadeInDown, FadeOutDown, Layout, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
@@ -37,6 +37,7 @@ const ACTIVITY_OPTIONS: { label: string; value: ActivityType }[] = [
   { label: "Trilha", value: "trilha" },
 ];
 const ROUTE_START_MAX_DISTANCE_METERS = 100;
+const NO_SIGNAL_TIMEOUT_MS = 20000;
 
 const inferActivityType = (value?: string): ActivityType => {
   const normalized = (value || "").toLowerCase();
@@ -53,12 +54,21 @@ const ActivityMapView = memo(function ActivityMapView({
   trackedPath,
   mapInitialRegion,
   mapRef,
+  currentTrackedPoint,
+  currentAccuracyMeters,
 }: {
   safeSuggestedPath: Coordinate[];
   trackedPath: Coordinate[];
   mapInitialRegion: any;
   mapRef: React.RefObject<MapView | null>;
+  currentTrackedPoint: Coordinate | null;
+  currentAccuracyMeters: number | null;
 }) {
+  const accuracyRadius =
+    typeof currentAccuracyMeters === "number"
+      ? Math.max(8, Math.min(80, currentAccuracyMeters))
+      : null;
+
   return (
     <MapView
       ref={mapRef}
@@ -93,6 +103,24 @@ const ActivityMapView = memo(function ActivityMapView({
       {trackedPath.length > 1 ? (
         <Polyline coordinates={trackedPath} strokeColor="#fb7185" strokeWidth={5} />
       ) : null}
+
+      {currentTrackedPoint && accuracyRadius ? (
+        <Circle
+          center={currentTrackedPoint}
+          radius={accuracyRadius}
+          fillColor="rgba(14, 165, 233, 0.18)"
+          strokeColor="rgba(56, 189, 248, 0.55)"
+          strokeWidth={1}
+        />
+      ) : null}
+
+      {currentTrackedPoint ? (
+        <Marker coordinate={currentTrackedPoint} title="Você agora" anchor={{ x: 0.5, y: 0.5 }}>
+          <View style={styles.userLocationMarkerOuter}>
+            <View style={styles.userLocationMarkerInner} />
+          </View>
+        </Marker>
+      ) : null}
     </MapView>
   );
 });
@@ -117,6 +145,8 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
   const [sensorSamples, setSensorSamples] = useState<{ timestamp: number; value: number }[]>([]);
   const [focusMode, setFocusMode] = useState(false);
   const [distanceFromRouteStartMeters, setDistanceFromRouteStartMeters] = useState<number | null>(null);
+  const [followUserPosition, setFollowUserPosition] = useState(true);
+  const [lastForegroundGpsAt, setLastForegroundGpsAt] = useState<number | null>(null);
 
   const safeSuggestedPath = useMemo(() => toCoordinateArray(rotaGuia?.rotaCompleta), [rotaGuia?.rotaCompleta]);
 
@@ -137,6 +167,12 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
   }, [session, safeSuggestedPath]);
 
   const trackedPath: Coordinate[] = useMemo(() => toCoordinateArray(session?.points || []), [session]);
+  const currentTrackedPoint = useMemo(() => trackedPath[trackedPath.length - 1] || null, [trackedPath]);
+  const currentTrackedAccuracy = useMemo(() => {
+    if (!session || session.points.length === 0) return null;
+    const accuracy = session.points[session.points.length - 1]?.accuracy;
+    return typeof accuracy === "number" && Number.isFinite(accuracy) ? accuracy : null;
+  }, [session]);
   const durationSeconds = useMemo(() => getSessionDurationSeconds(session), [session]);
   const averageSpeed = useMemo(() => getAverageSpeedKmh(session), [session]);
   const averagePace = useMemo(() => getAveragePaceMinPerKm(session), [session]);
@@ -150,6 +186,28 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
   const isRecording = session?.status === "recording";
   const isPaused = session?.status === "paused_auto" || session?.status === "paused_manual";
   const hasActiveSession = !!session && session.status !== "finished";
+  const lastPointTimestamp = session?.points?.[session.points.length - 1]?.timestamp ?? null;
+  const isForegroundTracking = session?.trackingMode === "foreground";
+  const lastGpsHeartbeat = useMemo(() => {
+    const fromWatch = lastForegroundGpsAt ?? 0;
+    const fromSession = lastPointTimestamp ?? 0;
+    const value = Math.max(fromWatch, fromSession);
+    return value > 0 ? value : null;
+  }, [lastForegroundGpsAt, lastPointTimestamp]);
+  const isWithoutGpsSignal = Boolean(
+    isRecording &&
+      isForegroundTracking &&
+      lastGpsHeartbeat &&
+      Date.now() - lastGpsHeartbeat > NO_SIGNAL_TIMEOUT_MS
+  );
+  const trackingStateLabel = isWithoutGpsSignal ? "sem sinal" : recordingStateLabel;
+  const trackingStateColor = isWithoutGpsSignal
+    ? "#f43f5e"
+    : session?.status === "paused_auto"
+    ? "#f59e0b"
+    : session?.status === "paused_manual"
+    ? "#94a3b8"
+    : "#7dd3fc";
   const routeStartPoint = useMemo(
     () => toCoordinate(rotaGuia?.startPoint) || toCoordinate(rotaGuia?.rotaCompleta?.[0]),
     [rotaGuia?.rotaCompleta, rotaGuia?.startPoint]
@@ -188,6 +246,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
       foregroundSubscription.current.remove();
       foregroundSubscription.current = null;
     }
+    setLastForegroundGpsAt(null);
   };
 
   const ensureLocationReady = useCallback(async (showAlerts: boolean): Promise<boolean> => {
@@ -245,15 +304,20 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
         { accuracy: Location.Accuracy.Balanced, timeInterval: 4000, distanceInterval: 10 },
         async (location) => {
           try {
+            const heartbeatTs = location.timestamp || Date.now();
+            setLastForegroundGpsAt(heartbeatTs);
             const updated = await appendForegroundPoint({
               latitude: location.coords.latitude,
               longitude: location.coords.longitude,
               altitude: typeof location.coords.altitude === "number" ? location.coords.altitude : null,
-              timestamp: location.timestamp || Date.now(),
+              accuracy: typeof location.coords.accuracy === "number" ? location.coords.accuracy : null,
+              timestamp: heartbeatTs,
             });
             if (updated) {
               setSession(updated);
-              mapRef.current?.animateCamera({ center: { latitude: location.coords.latitude, longitude: location.coords.longitude } });
+              if (followUserPosition) {
+                mapRef.current?.animateCamera({ center: { latitude: location.coords.latitude, longitude: location.coords.longitude } });
+              }
             }
           } catch (error: any) {
             console.warn("[activity] appendForegroundPoint failed:", error?.message || String(error));
@@ -264,7 +328,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
       console.warn("[activity] startForegroundWatch failed:", error?.message || String(error));
       setStatusMessage("Falha ao iniciar rastreamento em primeiro plano.");
     }
-  }, []);
+  }, [followUserPosition]);
 
   const refreshDistanceFromRouteStart = useCallback(
     async (coords?: Location.LocationObjectCoords) => {
@@ -456,6 +520,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
 
       setSession(response.session);
       if (response.mode === "foreground") {
+        setLastForegroundGpsAt(Date.now());
         await startForegroundWatch();
         setStatusMessage("Atividade iniciada. Rastreamento em tempo real ativo.");
       } else {
@@ -487,6 +552,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
       if (!response) return;
       setSession(response.session);
       if (response.mode === "foreground") {
+        setLastForegroundGpsAt(Date.now());
         await startForegroundWatch();
       } else {
         stopForegroundWatch();
@@ -563,6 +629,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
   const startButtonIcon = startBlockedByDistance ? "lock-closed-outline" : "play";
 
   const tabBarHeight = useBottomTabBarHeight();
+  const dockBottomPadding = Math.max(insets.bottom + tabBarHeight + 34, 78);
 
   if (loadingSession) {
     return (
@@ -581,6 +648,8 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
           trackedPath={trackedPath}
           mapInitialRegion={mapInitialRegion}
           mapRef={mapRef}
+          currentTrackedPoint={currentTrackedPoint}
+          currentAccuracyMeters={currentTrackedAccuracy}
         />
 
         <View style={[styles.mapTopRow, { top: insets.top + 8 }]}>
@@ -590,14 +659,25 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
           <View style={styles.statusWrap}>
             <Text style={styles.statusTitle}>{isRecording ? "Atividade em andamento" : "Painel de atividade"}</Text>
             <Text style={styles.statusDescription} numberOfLines={1}>
-              {statusMessage}
+              {isWithoutGpsSignal ? "Sem atualização recente de GPS. Aguarde sinal estável." : statusMessage}
             </Text>
-            <Text style={styles.statusState}>{recordingStateLabel}</Text>
+            <Text style={[styles.statusState, { color: trackingStateColor }]}>{trackingStateLabel}</Text>
           </View>
         </View>
 
         <Pressable style={[styles.locateButton, { bottom: 14 + Math.max(insets.bottom, 0) }]} onPress={handleCenterOnCurrentLocation}>
           <Ionicons name="locate" size={22} color="#f8fafc" />
+        </Pressable>
+
+        <Pressable
+          style={[
+            styles.followButton,
+            { bottom: 70 + Math.max(insets.bottom, 0) },
+            followUserPosition ? styles.followButtonActive : null,
+          ]}
+          onPress={() => setFollowUserPosition((current) => !current)}
+        >
+          <Ionicons name={followUserPosition ? "navigate" : "navigate-outline"} size={20} color="#f8fafc" />
         </Pressable>
 
         {isRecording && safeSuggestedPath.length > 0 && (
@@ -678,7 +758,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
           </View>
         </ScrollView>
 
-        <View style={[styles.actionsDock, { paddingBottom: Math.max(insets.bottom + tabBarHeight + 20, 36) }]}>
+        <View style={[styles.actionsDock, { paddingBottom: dockBottomPadding }]}>
           {!hasActiveSession ? (
             <Pressable
               disabled={startBlockedByDistance}
@@ -765,6 +845,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     elevation: 8,
+  },
+  followButton: {
+    position: "absolute",
+    right: 14,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.42)",
+    backgroundColor: "rgba(2,6,23,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 8,
+  },
+  followButtonActive: {
+    borderColor: "rgba(56, 189, 248, 0.9)",
+    backgroundColor: "rgba(14, 116, 144, 0.85)",
   },
   metricsSection: { backgroundColor: "#0f172a" },
   dragHandleWrap: { alignItems: "center", paddingTop: 8, paddingBottom: 2, backgroundColor: "#0f172a" },
@@ -871,6 +968,22 @@ const styles = StyleSheet.create({
     borderColor: '#fff',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  userLocationMarkerOuter: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "rgba(14, 165, 233, 0.30)",
+    borderWidth: 2,
+    borderColor: "#e0f2fe",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  userLocationMarkerInner: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#0ea5e9",
   },
   navHud: {
     position: 'absolute',

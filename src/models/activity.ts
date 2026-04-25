@@ -7,6 +7,7 @@ export type ActivityPoint = {
   latitude: number;
   longitude: number;
   altitude?: number | null;
+  accuracy?: number | null;
   timestamp: number;
 };
 
@@ -42,4 +43,3 @@ export type ActiveActivitySession = {
   elevation: ElevationStats;
   autoPause: AutoPauseConfig;
 };
-

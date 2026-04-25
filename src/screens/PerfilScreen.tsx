@@ -144,7 +144,14 @@ export default function PerfilScreen(props: PerfilScreenProps) {
               setUsername(data.username || `user_${user.uid.substring(0, 6)}`);
               setRole(resolveUserRole(data, user.email || "") as "user" | "admin");
 
-              if (data.atividades) {
+              const lifetimeKm = toFiniteNumber(data?.lifetimeStats?.totalKm);
+              const lifetimeDuration = toFiniteNumber(data?.lifetimeStats?.totalDurationSeconds);
+              const hasLifetimeStats = lifetimeKm !== null && lifetimeDuration !== null;
+
+              if (hasLifetimeStats) {
+                setTotalKm(Math.max(0, lifetimeKm || 0));
+                setTotalDurationSeconds(Math.max(0, lifetimeDuration || 0));
+              } else if (data.atividades) {
                 let km = 0;
                 let totalSeconds = 0;
                 Object.values(data.atividades).forEach((ativ: any) => {
@@ -217,7 +224,7 @@ export default function PerfilScreen(props: PerfilScreenProps) {
 
   const handleShareProfile = async () => {
     try {
-      await Share.share({ message: `Meu perfil no Track & Trail:\n${profileDeepLink}\n${profileWebLink}` });
+      await Share.share({ message: `Meu perfil no Track-Traill:\n${profileDeepLink}\n${profileWebLink}` });
     } catch {
       Alert.alert("Erro", "Não foi possível compartilhar o perfil agora.");
     }

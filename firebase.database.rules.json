@@ -4,18 +4,18 @@
     ".write": false,
     "users": {
       ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
-      ".indexOn": ["role"],
+      ".indexOn": ["role", "email"],
       "$uid": {
         ".read": "auth != null",
         ".write": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')",
         "role": {
-          ".write": false
+          ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')"
         },
         "roleSource": {
-          ".write": false
+          ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')"
         },
         "roleUpdatedAt": {
-          ".write": false
+          ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.admin === true || auth.token.role === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1')"
         },
         "privacyZone": {
           ".write": "auth != null && auth.uid === $uid"
@@ -106,7 +106,7 @@
     "pois": {
       ".read": "auth != null",
       "$poiId": {
-        ".write": "auth != null && ((!data.exists() && newData.child('criadoPor').val() === auth.uid) || (data.exists() && data.child('criadoPor').val() === auth.uid && (newData.child('criadoPor').val() === auth.uid || !newData.exists())))"
+        ".write": "auth != null && ((auth.token.admin === true || auth.token.role === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.email === 'brunonunes01@gmail.com' || auth.token.email === 'brunobhnuness@gmail.com' || auth.uid === 'CnzVNL1lmkSWbmfinldxs96VAWg1') || (!data.exists() && newData.child('criadoPor').val() === auth.uid) || (data.exists() && data.child('criadoPor').val() === auth.uid && (newData.child('criadoPor').val() === auth.uid || !newData.exists())))"
       }
     }
   }

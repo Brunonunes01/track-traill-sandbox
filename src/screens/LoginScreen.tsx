@@ -1,10 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import {
-  onAuthStateChanged,
   sendPasswordResetEmail,
+  signOut,
   signInWithEmailAndPassword,
 } from "firebase/auth";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   Alert,
   Animated,
@@ -20,7 +20,7 @@ import {
   View,
 } from "react-native";
 import { auth } from "../../services/connectionFirebase";
-import { ensureUserProfileCompatibility } from "../services/userService";
+import { ensureUserProfileCompatibility, hasRegisteredUserProfile } from "../services/userService";
 
 const LOGIN_ATTEMPT_TIMEOUT_MS = 15000;
 
@@ -89,15 +89,6 @@ export default function LoginScreen({ navigation }: any) {
     [navigation]
   );
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        navigateToMain("auth-state-listener");
-      }
-    });
-    return unsubscribe;
-  }, [navigateToMain]);
-
   const handleFocus = (anim: Animated.Value) => {
     Animated.timing(anim, {
       toValue: 1,
@@ -131,6 +122,13 @@ export default function LoginScreen({ navigation }: any) {
         LOGIN_ATTEMPT_TIMEOUT_MS,
         "Tempo de login excedido. Verifique sua conexão e tente novamente."
       );
+
+      const hasProfile = await hasRegisteredUserProfile(userCredential.user.uid);
+      if (!hasProfile) {
+        await signOut(auth).catch(() => {});
+        setError("Cadastro incompleto. Crie sua conta novamente preenchendo todos os dados.");
+        return;
+      }
 
       try {
         await ensureUserProfileCompatibility({

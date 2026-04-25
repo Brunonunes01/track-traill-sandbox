@@ -19,7 +19,7 @@ import {
 import MapView, { Marker, PROVIDER_DEFAULT } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
-import { ALERT_TYPE_META, ALERT_TYPES, AlertType } from "../models/alerts";
+import { ALERT_TYPE_META, ALERT_TYPES, AlertCategory, AlertType } from "../models/alerts";
 import { createAlert } from "../services/alertService";
 import { FALLBACK_REGION, getRegionWithFallback, toCoordinate } from "../utils/geo";
 
@@ -48,6 +48,7 @@ export default function AlertFormScreen(props: AlertFormScreenProps) {
   });
 
   const [type, setType] = useState<AlertType>("acidente");
+  const [category, setCategory] = useState<AlertCategory>("temporario");
   const [description, setDescription] = useState("");
   const [latitude, setLatitude] = useState<number | null>(safeInitialPoint?.latitude ?? null);
   const [longitude, setLongitude] = useState<number | null>(safeInitialPoint?.longitude ?? null);
@@ -134,6 +135,7 @@ export default function AlertFormScreen(props: AlertFormScreenProps) {
       const created = await createAlert(
         {
           type,
+          category,
           description,
           latitude,
           longitude,
@@ -206,6 +208,44 @@ export default function AlertFormScreen(props: AlertFormScreenProps) {
           })}
         </View>
 
+        <Text style={styles.label}>Natureza do alerta</Text>
+        <View style={styles.typeGrid}>
+          {(
+            [
+              {
+                key: "temporario",
+                label: "Temporário (horas)",
+                icon: "time-outline",
+              },
+              {
+                key: "persistente",
+                label: "Persistente (até resolver)",
+                icon: "calendar-outline",
+              },
+            ] as { key: AlertCategory; label: string; icon: keyof typeof Ionicons.glyphMap }[]
+          ).map((item) => {
+            const active = category === item.key;
+            return (
+              <TouchableOpacity
+                key={item.key}
+                style={[
+                  styles.typeChip,
+                  {
+                    borderColor: active ? "#0ea5e9" : "#374151",
+                    backgroundColor: active ? "#111827" : "#030712",
+                  },
+                ]}
+                onPress={() => setCategory(item.key)}
+              >
+                <Ionicons name={item.icon} size={14} color={active ? "#38bdf8" : "#9ca3af"} />
+                <Text style={[styles.typeChipText, { color: active ? "#fff" : "#9ca3af" }]}>
+                  {item.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
         <Text style={styles.label}>Descrição</Text>
         <TextInput
           style={styles.descriptionInput}
@@ -219,7 +259,9 @@ export default function AlertFormScreen(props: AlertFormScreenProps) {
 
         <Text style={styles.label}>Tempo de vida do alerta</Text>
         <Text style={styles.routeBadge}>
-          O alerta é publicado como ativo e fica visível por tempo limitado.
+          {category === "temporario"
+            ? "Temporário: expira automaticamente em algumas horas."
+            : "Persistente: fica ativo até resolução manual ou revisão por feedbacks."}
         </Text>
 
         <Text style={styles.label}>Local do alerta</Text>

@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { createUserWithEmailAndPassword, type User } from "firebase/auth";
-import React, { useState } from "react";
+import { createUserWithEmailAndPassword, signOut, type User, updateProfile } from "firebase/auth";
+import React, { useEffect, useState } from "react";
 import {
   Image,
   ImageBackground,
@@ -32,6 +32,25 @@ export default function RegisterScreen({ navigation }: any) {
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (auth.currentUser) {
+      signOut(auth).catch((error) => {
+        console.warn("[register] failed to clear previous session:", error);
+      });
+    }
+  }, []);
+
+  const navigateToMain = () => {
+    if (typeof navigation?.replace === "function") {
+      navigation.replace("MainTabs");
+      return;
+    }
+
+    if (typeof navigation?.navigate === "function") {
+      navigation.navigate("MainTabs");
+    }
+  };
 
   const onDateChange = (event: any, selectedDate?: Date) => {
     // No Android, o picker fecha sozinho. No iOS, ele pode ficar aberto (estilo spinner).
@@ -88,12 +107,19 @@ export default function RegisterScreen({ navigation }: any) {
           phone: phone.trim(),
           address: address.trim(),
         });
+
+        try {
+          await updateProfile(user, { displayName: fullName.trim() });
+        } catch (profileUpdateError) {
+          console.warn("[register] failed to sync auth displayName:", profileUpdateError);
+        }
       } catch (profileError) {
         try {
           await createdUser.delete();
         } catch (deleteError) {
           console.warn("[register] failed to rollback auth user:", deleteError);
         }
+        await signOut(auth).catch(() => {});
         throw profileError;
       }
 
@@ -106,8 +132,7 @@ export default function RegisterScreen({ navigation }: any) {
       setAddress("");
       setError("");
 
-      // NUNCA navegue manualmente para Login após criar conta. 
-      // O Firebase Auth altera o estado global e o app fluirá para a Home via _layout.tsx.
+      navigateToMain();
     } catch (err: any) {
       if (err.code === "auth/email-already-in-use") setError("Este e-mail já está em uso.");
       else if (err.code === "auth/invalid-email") setError("E-mail inválido.");
@@ -115,6 +140,11 @@ export default function RegisterScreen({ navigation }: any) {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleGoToLogin = async () => {
+    await signOut(auth).catch(() => {});
+    navigation.navigate("Login");
   };
 
   const webInputExtraStyle = Platform.OS === "web" ? ({ outlineWidth: 0 } as any) : {};
@@ -282,7 +312,7 @@ export default function RegisterScreen({ navigation }: any) {
                 </Text>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.switchButton} onPress={() => navigation.navigate("Login")}>
+              <TouchableOpacity style={styles.switchButton} onPress={handleGoToLogin}>
                 <Text style={styles.switchText}>
                   Já tem uma conta? <Text style={styles.switchLink}>Entrar</Text>
                 </Text>

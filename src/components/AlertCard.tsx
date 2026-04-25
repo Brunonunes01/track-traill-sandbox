@@ -30,6 +30,8 @@ export default function AlertCard({ alert, compact, onPress }: AlertCardProps) {
           ? "#f59e0b"
           : "#9ca3af";
   const expirationLabel = formatDate(alert.expiresAt);
+  const expirationText =
+    alert.category === "persistente" ? "Sem expiração automática" : `Expira: ${expirationLabel}`;
   const confidence = Math.max(0, Math.min(100, Math.round(alert.confidenceScore || 0)));
   const risk = Math.max(0, Math.min(100, Math.round(alert.riskScore || 0)));
 
@@ -60,7 +62,8 @@ export default function AlertCard({ alert, compact, onPress }: AlertCardProps) {
       <View style={styles.footerRow}>
         <View>
           <Text style={styles.dateText}>Criado: {formatDate(alert.createdAt)}</Text>
-          <Text style={styles.expireText}>Expira: {expirationLabel}</Text>
+          <Text style={styles.expireText}>{expirationText}</Text>
+          <Text style={styles.expireText}>Categoria: {alert.category}</Text>
           <Text style={styles.confidenceText}>Confiabilidade: {confidence}%</Text>
         </View>
         <View style={styles.metaRight}>

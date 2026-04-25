@@ -1,5 +1,6 @@
 import { onIdTokenChanged } from "firebase/auth";
 import Constants from "expo-constants";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import {
   equalTo,
   get,
@@ -7,17 +8,21 @@ import {
   orderByChild,
   query,
   ref,
+  update,
 } from "firebase/database";
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { auth, database } from "./connectionFirebase";
+import app, { auth, database } from "./connectionFirebase";
 
 const USERS_PATH = "users";
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const normalizeEmail = (email) => (email || "").trim().toLowerCase();
 const isPermissionDenied = (message) =>
   String(message || "").toLowerCase().includes("permission_denied");
 
 const MASTER_ADMIN_EMAIL = "brunobhnuness@gmail.com";
+const firebaseFunctionsRegion =
+  Constants.expoConfig?.extra?.firebaseFunctionsRegion || "us-central1";
+const functions = getFunctions(app, firebaseFunctionsRegion);
 
 export const resolveUserRole = (userRecord, email) => {
   const normalized = normalizeEmail(email || userRecord?.email);
@@ -44,28 +49,37 @@ export const ensureUserRole = async (uid, email) => {
   return resolvedRole;
 };
 
-const getFunctionsRegion = () => {
-  const envRegion = process.env.EXPO_PUBLIC_FIREBASE_FUNCTIONS_REGION;
-  if (envRegion?.trim()) return envRegion.trim();
-  const extraRegion = (Constants.expoConfig?.extra || {}).firebaseFunctionsRegion;
-  if (typeof extraRegion === "string" && extraRegion.trim()) return extraRegion.trim();
-  return "us-central1";
-};
-
-const callAdminFunction = async (name, payload) => {
-  if (!auth.currentUser?.uid) {
+const ensureCanManageAdmins = async () => {
+  const currentUser = auth.currentUser;
+  if (!currentUser?.uid) {
     throw new Error("Você precisa estar autenticado para esta operação.");
   }
 
-  try {
-    const functions = getFunctions(undefined, getFunctionsRegion());
-    const callable = httpsCallable(functions, name);
-    const result = await callable(payload);
-    return result?.data || null;
-  } catch (error) {
-    const message = String(error?.message || "").trim();
-    throw new Error(message || "Falha ao executar ação administrativa.");
+  const currentRole = await ensureUserRole(currentUser.uid, currentUser.email || "");
+  if (currentRole !== "admin") {
+    throw new Error("Você não tem permissão para esta ação administrativa.");
   }
+
+  return currentUser;
+};
+
+const findUserUidByEmail = async (email) => {
+  const usersRef = ref(database, USERS_PATH);
+  const normalizedEmail = normalizeEmail(email);
+
+  const byEmailQuery = query(usersRef, orderByChild("email"), equalTo(normalizedEmail));
+  const byEmailSnapshot = await get(byEmailQuery);
+  const byEmailUsers = mapSnapshotToUsers(byEmailSnapshot);
+  if (byEmailUsers.length > 0) {
+    return byEmailUsers[0].uid;
+  }
+
+  const allUsersSnapshot = await get(usersRef);
+  const allUsers = mapSnapshotToUsers(allUsersSnapshot);
+  const matched = allUsers.find((user) => normalizeEmail(user.email) === normalizedEmail);
+  if (matched?.uid) return matched.uid;
+
+  throw new Error("Usuário não encontrado. Verifique se o e-mail já está cadastrado.");
 };
 
 export const addAdminByEmail = async (email) => {
@@ -73,18 +87,82 @@ export const addAdminByEmail = async (email) => {
   if (!normalizedEmail) {
     throw new Error("Informe um e-mail válido.");
   }
+  if (!EMAIL_REGEX.test(normalizedEmail)) {
+    throw new Error("Formato de e-mail inválido.");
+  }
 
-  const response = await callAdminFunction("setUserAdminClaim", { email: normalizedEmail });
-  return response;
+  await ensureCanManageAdmins();
+  const targetUid = await findUserUidByEmail(normalizedEmail);
+  const now = new Date().toISOString();
+
+  await update(ref(database, `${USERS_PATH}/${targetUid}`), {
+    role: "admin",
+    roleSource: "database_rule",
+    roleUpdatedAt: now,
+  });
+
+  return {
+    ok: true,
+    uid: targetUid,
+    role: "admin",
+  };
 };
 
 export const removeAdminRole = async (uid) => {
-  if (!uid?.trim()) {
+  const targetUid = String(uid || "").trim();
+  if (!targetUid) {
+    throw new Error("Usuário inválido.");
+  }
+  const currentUser = await ensureCanManageAdmins();
+  if (targetUid === currentUser.uid) {
+    throw new Error("Você não pode remover seu próprio acesso de administrador.");
+  }
+
+  const now = new Date().toISOString();
+  await update(ref(database, `${USERS_PATH}/${targetUid}`), {
+    role: "user",
+    roleSource: "database_rule",
+    roleUpdatedAt: now,
+  });
+
+  return {
+    ok: true,
+    uid: targetUid,
+    role: "user",
+  };
+};
+
+export const deleteUserAccount = async (uid) => {
+  const targetUid = String(uid || "").trim();
+  if (!targetUid) {
     throw new Error("Usuário inválido.");
   }
 
-  const response = await callAdminFunction("clearUserAdminClaim", { uid: uid.trim() });
-  return response;
+  const currentUser = await ensureCanManageAdmins();
+  if (targetUid === currentUser.uid) {
+    throw new Error("Você não pode excluir sua própria conta.");
+  }
+
+  const deleteAccount = httpsCallable(functions, "deleteUserAccount");
+  try {
+    const result = await deleteAccount({ uid: targetUid });
+    return result.data;
+  } catch (error) {
+    const code = String(error?.code || "").toLowerCase();
+    const message = String(error?.message || "").trim();
+    const normalizedMessage = message.toLowerCase();
+
+    if (
+      code.includes("not-found") &&
+      (!message || normalizedMessage === "not found" || normalizedMessage.includes("function"))
+    ) {
+      throw new Error(
+        "Função de exclusão não encontrada no Firebase. Publique as Functions com `firebase deploy --only functions`."
+      );
+    }
+
+    throw new Error(message || "Não foi possível excluir a conta.");
+  }
 };
 
 const mapSnapshotToUsers = (snapshot) => {
@@ -174,10 +252,13 @@ export const subscribeCurrentUserRole = (onChange) => {
       (snapshot) => {
         const data = snapshot.val() || {};
         const dbRole = resolveUserRole(data, user.email || "");
-        const role = (claimRole === "admin" || normalizeEmail(user.email) === MASTER_ADMIN_EMAIL) ? "admin" : "user";
+        const role =
+          claimRole === "admin" || dbRole === "admin" || normalizeEmail(user.email) === MASTER_ADMIN_EMAIL
+            ? "admin"
+            : "user";
         if (dbRole === "admin" && claimRole !== "admin" && normalizeEmail(user.email) !== MASTER_ADMIN_EMAIL) {
           console.warn(
-            "[admin] role=admin no banco, mas claim admin ausente no token. Regras podem negar acesso."
+            "[admin] role=admin no banco sem claim; modo sem Cloud Functions ativo."
           );
         }
         onChange({ isAdmin: role === "admin", role, user });

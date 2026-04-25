@@ -9,7 +9,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth, database } from "../../services/connectionFirebase";
 import WeatherCard from "../components/WeatherCard";
 import { AppCard, EmptyState, SectionTitle } from "../components/ui";
-import { getPendingSyncActivities, removePendingSyncActivity } from "../services/activityTrackingService";
+import {
+  adjustUserLifetimeStats,
+  getPendingSyncActivities,
+  removePendingSyncActivity,
+} from "../services/activityTrackingService";
 import { colors, layout, radius, spacing } from "../theme/designSystem";
 
 type WeatherCoordinates = {
@@ -247,36 +251,55 @@ export default function DashboardScreen() {
   };
 
   const handleDelete = (item: DashboardActivity) => {
-    Alert.alert("Excluir atividade", "Tem certeza? Essa ação não pode ser desfeita.", [
-      { text: "Cancelar", style: "cancel" },
-      {
-        text: "Excluir",
-        style: "destructive",
-        onPress: async () => {
-          if (item?.isPending) {
-            try {
-              await removePendingSyncActivity(String(item.id));
-              await refreshLocalPending();
-            } catch (error: any) {
-              Alert.alert("Erro", error?.message || "Não foi possível excluir a atividade pendente.");
-            }
-            return;
-          }
+    const deleteActivity = async (subtractFromLifetimeStats: boolean) => {
+      if (item?.isPending) {
+        try {
+          await removePendingSyncActivity(String(item.id));
+          await refreshLocalPending();
+        } catch (error: any) {
+          Alert.alert("Erro", error?.message || "Não foi possível excluir a atividade pendente.");
+        }
+        return;
+      }
 
-          if (!user?.uid) {
-            Alert.alert("Erro", "Usuário não autenticado.");
-            return;
-          }
+      if (!user?.uid) {
+        Alert.alert("Erro", "Usuário não autenticado.");
+        return;
+      }
 
-          try {
-            const activityRef = ref(database, `users/${user?.uid}/atividades/${item.id}`);
-            await remove(activityRef);
-          } catch (error: any) {
-            Alert.alert("Erro", error?.message || "Não foi possível excluir a atividade.");
-          }
+      try {
+        const activityRef = ref(database, `users/${user.uid}/atividades/${item.id}`);
+        await remove(activityRef);
+
+        if (subtractFromLifetimeStats) {
+          await adjustUserLifetimeStats(
+            user.uid,
+            -Math.max(0, toFiniteNumber(item.distancia, 0)),
+            -Math.max(0, toFiniteNumber(item.duracao, 0))
+          );
+        }
+      } catch (error: any) {
+        Alert.alert("Erro", error?.message || "Não foi possível excluir a atividade.");
+      }
+    };
+
+    Alert.alert(
+      "Excluir atividade",
+      "Você quer apagar apenas o registro ou também descontar km/tempo do acumulado do perfil?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Só atividade",
+          style: "destructive",
+          onPress: () => deleteActivity(false),
         },
-      },
-    ]);
+        {
+          text: "Atividade + descontar",
+          style: "destructive",
+          onPress: () => deleteActivity(true),
+        },
+      ]
+    );
   };
 
   const renderActivityCard = ({ item }: { item: DashboardActivity }) => {

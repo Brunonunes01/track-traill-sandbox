@@ -10,6 +10,11 @@ const pickEnv = (name, fallback = "") => {
 
 module.exports = ({ config }) => {
   const base = config ?? expo;
+  const requiredPlugins = [
+    "@react-native-community/datetimepicker",
+    "expo-font",
+    "expo-web-browser",
+  ];
 
   const googleMapsApiKey = pickEnv(
     "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY",
@@ -39,12 +44,20 @@ module.exports = ({ config }) => {
     );
   }
 
+  const normalizedPlugins = [...(base.plugins || [])];
+  const hasPlugin = (name) =>
+    normalizedPlugins.some((plugin) =>
+      Array.isArray(plugin) ? plugin[0] === name : plugin === name
+    );
+  requiredPlugins.forEach((pluginName) => {
+    if (!hasPlugin(pluginName)) {
+      normalizedPlugins.push(pluginName);
+    }
+  });
+
   return {
     ...base,
-    plugins: [
-      ...(base.plugins || []),
-      "@react-native-community/datetimepicker"
-    ],
+    plugins: normalizedPlugins,
     android: {
       ...(base?.android || {}),
       config: {

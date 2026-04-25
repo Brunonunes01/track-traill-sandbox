@@ -16,6 +16,9 @@ export type PointOfInterest = {
   tipo: POIType;
   coordenadas: POICoordinate;
   criadoPor: string;
+  criadoPorNome?: string | null;
+  criadoPorEmail?: string | null;
+  criadoPorDisplay: string;
   dataCriacao: string;
 };
 
